@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shinrai-engine.fullname" . }}
+  labels:
+    {{- include "shinrai-engine.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    # Named port; the Ingress routes to the same name so the wiring cannot
+    # drift apart.
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+  selector:
+    {{- include "shinrai-engine.selectorLabels" . | nindent 4 }}

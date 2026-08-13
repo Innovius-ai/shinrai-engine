@@ -1,0 +1,68 @@
+# ShinrAI label inventory v2.0 — frozen at Gate G0 (PLAN.md §5).
+# This file is THE machine-readable label definition: training, eval, and export
+# all read it. Changing it is a schema version bump and requires an ADR.
+
+schema_version: "2.0"
+
+# --- Token-classification heads (IOB2 + tier, 7 labels each) -----------------
+heads:
+  PERSON:
+    tiers: [common, uncommon, rare]
+    tier_semantics: >
+      Frequency rank in language-specific name statistics: common = top 5k,
+      uncommon = rank 5k-25k, rare = beyond. Rarer names are MORE identifying and
+      therefore more sensitive. Ranks within +/-10% of the 5k/25k boundaries are
+      excluded from gold sets (hysteresis).
+    labels: [O, B-PERSON-COMMON, I-PERSON-COMMON, B-PERSON-UNCOMMON, I-PERSON-UNCOMMON, B-PERSON-RARE, I-PERSON-RARE]
+  CITY:
+    tiers: [major, medium, small]
+    tier_semantics: >
+      GeoNames population bands: major > 500k, medium 50k-500k, small < 50k.
+      Records within +/-10% of a band edge are excluded from gold sets (hysteresis).
+    labels: [O, B-CITY-MAJOR, I-CITY-MAJOR, B-CITY-MEDIUM, I-CITY-MEDIUM, B-CITY-SMALL, I-CITY-SMALL]
+  STREET:
+    tiers: [generic, specific, local]
+    tier_semantics: >
+      generic = descriptive names found everywhere (Hauptstrasse, Main Street);
+      specific = named after recognizable people/places/events (Rue de Rivoli);
+      local = unique names with only local significance (Zum Baerenbach).
+    labels: [O, B-STREET-GENERIC, I-STREET-GENERIC, B-STREET-SPECIFIC, I-STREET-SPECIFIC, B-STREET-LOCAL, I-STREET-LOCAL]
+  ORG:
+    tiers: [international, national, regional]
+    tier_semantics: >
+      international = global brands / major indices; national = major players known
+      country-wide; regional = SMEs and local businesses.
+    labels: [O, B-ORG-INTERNATIONAL, I-ORG-INTERNATIONAL, B-ORG-NATIONAL, I-ORG-NATIONAL, B-ORG-REGIONAL, I-ORG-REGIONAL]
+
+# --- Span-attribute heads (pooled over predicted spans, same forward pass) ---
+attributes:
+  origin:
+    applies_to: [PERSON, CITY, STREET, ORG]
+    # NOTE: 'NO' (Norway) must stay quoted — unquoted NO parses as boolean false in YAML 1.1.
+    classes: [DE, AT, CH, GB, IE, US, CA, AU, FR, BE, ES, MX, AR, IT, PT, BR, PL, CZ, SK, NL, SE, 'NO', DK, FI, IS, RO, GR, HU, BG, UA, RU, TR, CN, TW, HK, JP, KR, VN, TH, ID, IN, OTHER]
+    semantics: >
+      Cultural/geographic origin of the ENTITY, independent of text language.
+      A German text mentioning 'Mailand' has a CITY with origin IT. Drives
+      realm-preserving replacement (PLAN.md §9 mode 'preserve').
+  gender_expression:
+    applies_to: [PERSON]
+    classes: [masc, fem, neutral, unknown]
+    semantics: >
+      Expressed gender of the name form, from gazetteer statistics. Replacement
+      never flips masc<->fem; neutral/unknown prefer neutral replacements.
+  name_part:
+    applies_to: [PERSON]
+    classes: [given, family, full]
+    semantics: Maps PERSON spans to the legacy API types (see api_mapping).
+
+# --- Mapping to the shinrai-encryption API type strings ----------------------
+# The existing engine consumes these type strings (frozen contract, PLAN.md §5.3).
+api_mapping:
+  PERSON:
+    by_name_part:
+      given: FIRSTNAME
+      family: SURNAME
+      full: PERSON
+  CITY: CITY
+  STREET: STREET_ADDRESS
+  ORG: COMPANY

@@ -1,0 +1,50 @@
+# shinrai-engine GPU image (CUDA 12, NVIDIA only).
+#
+# Why onnxruntime-gpu 1.26.x and not the latest:
+#   onnxruntime-gpu >= 1.27 is built against CUDA 13, and CUDA 13 dropped
+#   Pascal (sm_6x) entirely. The 1.20-1.26 line is the last one built for
+#   CUDA 12 + cuDNN 9. Official CUDA-12 ORT wheels target compute capability
+#   >= 6.0, and sm_60 SASS is binary-compatible with sm_61 (e.g. Tesla P40),
+#   so Pascal is expected to work on this line — expected, not guaranteed:
+#   the engine probes the CUDA provider at startup and reports the actually
+#   active providers on /healthz. On Turing or newer you may bump
+#   ORT_GPU_VERSION to a CUDA-13 build (and a CUDA 13 base image).
+#
+# Note on quantized models: int8 dynamic-quantized graphs have no CUDA
+# kernels for their quantized ops and mostly run on CPU regardless of the
+# provider. GPU serving is effectively fp32-only.
+
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+ARG ORT_GPU_VERSION=1.26.*
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home srv
+
+# Isolated venv: Ubuntu 24.04 marks the system python externally-managed.
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE NOTICE /app/
+COPY src /app/src
+
+RUN pip install --no-cache-dir . "onnxruntime-gpu==${ORT_GPU_VERSION}" && pip cache purge || true
+
+ENV PYTHONUNBUFFERED=1 \
+    SHINRAI_MODEL_CACHE=/models \
+    SHINRAI_EXECUTION_PROVIDER=cuda \
+    HF_HUB_DISABLE_TELEMETRY=1
+
+RUN mkdir -p /models && chown srv:srv /models
+VOLUME /models
+
+USER srv
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+    CMD ["python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"]
+
+CMD ["python", "-m", "shinrai_engine"]

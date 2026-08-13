@@ -1,0 +1,14 @@
+# Opt-in "weights baked in" variant. Build with your engine image as the base
+# and a local models/ directory containing one bundle per model name:
+#
+#   docker build -f docker/Dockerfile.bundle \
+#     --build-arg BASE_IMAGE=ghcr.io/innovius-ai/shinrai-engine:<version> \
+#     -t shinrai-engine-bundled .
+#
+# The engine then starts with SHINRAI_MODELS=v1.1=/models/v1.1 (adjust names)
+# and needs no network. Mind the model license terms when distributing the
+# resulting image.
+
+ARG BASE_IMAGE=ghcr.io/innovius-ai/shinrai-engine:latest
+FROM ${BASE_IMAGE}
+COPY --chown=srv:srv models/ /models/

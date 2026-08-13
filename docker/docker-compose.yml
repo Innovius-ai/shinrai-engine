@@ -1,0 +1,63 @@
+# Three ways to run shinrai-engine. Default profile: CPU with a named volume,
+# first start downloads the fp32 v1.1 model (~1.3 GB) from Hugging Face.
+#
+#   docker compose -f docker/docker-compose.yml up engine
+#   docker compose -f docker/docker-compose.yml --profile gpu up engine-gpu
+#   docker compose -f docker/docker-compose.yml --profile mounted up engine-mounted
+#
+# Set SHINRAI_API_KEY before exposing the port beyond localhost.
+
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+    image: shinrai-engine:local
+    ports:
+      - "8080:8080"
+    volumes:
+      - shinrai-models:/models
+    environment:
+      SHINRAI_MODELS: "v1.1=hf://innovius/shinrai-pii-pathfinder-m-v1.1"
+      SHINRAI_PRECISION: "fp32"
+      SHINRAI_THREADS: "4"
+      # SHINRAI_API_KEY: "change-me"
+
+  engine-gpu:
+    profiles: ["gpu"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    image: shinrai-engine:local-gpu
+    ports:
+      - "8080:8080"
+    volumes:
+      - shinrai-models:/models
+    environment:
+      SHINRAI_MODELS: "v1.1=hf://innovius/shinrai-pii-pathfinder-m-v1.1"
+      SHINRAI_PRECISION: "fp32"  # GPU serving is effectively fp32-only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  engine-mounted:
+    profiles: ["mounted"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cpu
+    image: shinrai-engine:local
+    ports:
+      - "8080:8080"
+    volumes:
+      # Point this at a directory containing the release bundle.
+      - ${SHINRAI_BUNDLE_DIR:?set SHINRAI_BUNDLE_DIR to your model bundle}:/models/v1.1:ro
+    environment:
+      SHINRAI_MODELS: "v1.1=/models/v1.1"
+      HF_HUB_OFFLINE: "1"
+
+volumes:
+  shinrai-models:

@@ -1,0 +1,38 @@
+shinrai-engine {{ .Chart.AppVersion }} deployed.
+
+Endpoint (in-cluster):
+  http://{{ include "shinrai-engine.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+
+Try it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "shinrai-engine.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s http://127.0.0.1:8080/healthz
+  curl -s -X POST http://127.0.0.1:8080/api/analyze \
+    -H 'Content-Type: application/json' \
+    -d '{"text": "Anna Miller lives in Berlin."}'
+{{- if not (include "shinrai-engine.authEnabled" .) }}
+
+!! AUTH DISABLED — /api/* and /metrics are open to anyone who can reach the
+!! Service. Keep it ClusterIP-only, or set apiKey.existingSecret / apiKey.value.
+{{- end }}
+{{- if ne .Values.model.precision "fp32" }}
+
+!! PRECISION WARNING — model.precision={{ .Values.model.precision }}.
+!! fp32 is the only supported production precision. Benchmarks put q8 within
+!! ±0.33 macro-F1 of fp32, but a 2026-08 field test on real documents found q8
+!! below its benchmark verdict (not yet quantified); int4 is measured
+!! 0.75-2.10 macro-F1 below fp32. Use non-fp32 for evaluation only.
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+
+Note: persistence is disabled — every pod restart re-downloads the model
+(~1.3 GB for fp32). Enable it with:
+  --set persistence.enabled=true
+(microk8s: run `microk8s enable hostpath-storage` first)
+{{- end }}
+{{- if .Values.gpu.enabled }}
+
+GPU mode: verify the CUDA provider is actually active:
+  curl -s http://127.0.0.1:8080/healthz | grep CUDA
+If it reports only CPUExecutionProvider, see the GPU section of the README
+(CUDA 12 / onnxruntime-gpu 1.26 line; Pascal cards are expected-but-unverified).
+{{- end }}
