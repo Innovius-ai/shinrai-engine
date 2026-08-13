@@ -53,8 +53,11 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # Point this at a directory containing the release bundle.
-      - ${SHINRAI_BUNDLE_DIR:?set SHINRAI_BUNDLE_DIR to your model bundle}:/models/v1.1:ro
+      # Point SHINRAI_BUNDLE_DIR at a directory containing the release bundle.
+      # A default (not :?) on purpose: compose interpolates every service
+      # before profiles apply, so a hard-required variable here would break
+      # `up engine` for users who never touch the mounted profile.
+      - ${SHINRAI_BUNDLE_DIR:-./bundle-not-set}:/models/v1.1:ro
     environment:
       SHINRAI_MODELS: "v1.1=/models/v1.1"
       HF_HUB_OFFLINE: "1"
