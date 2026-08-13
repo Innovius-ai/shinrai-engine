@@ -93,8 +93,15 @@ probes:
 
 replicaCount: 1
 
+# Numeric ids on purpose: runAsNonRoot alone cannot be verified against the
+# image's named user, and fsGroup makes the models volume writable by the
+# non-root user (the images create srv with uid 10001 — chosen above the
+# range base images pre-claim; Ubuntu 24.04 ships `ubuntu` at 1000).
 podSecurityContext:
   runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
 
 nodeSelector: {}
 tolerations: []

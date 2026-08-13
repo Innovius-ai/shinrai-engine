@@ -10,7 +10,9 @@
 
 FROM python:3.12-slim
 
-RUN useradd --create-home srv
+# Fixed uid so runAsUser/fsGroup in the Helm chart can reference it
+# numerically; 10001 stays clear of uids base images pre-claim.
+RUN useradd --create-home --uid 10001 srv
 
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE NOTICE /app/
