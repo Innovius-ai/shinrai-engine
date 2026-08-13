@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir ".[cpu]" && pip cache purge || true
 
 ENV PYTHONUNBUFFERED=1 \
     SHINRAI_MODEL_CACHE=/models \
-    HF_HUB_DISABLE_TELEMETRY=1
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HOME=/models/.hf-cache
 
 RUN mkdir -p /models && chown srv:srv /models
 VOLUME /models
