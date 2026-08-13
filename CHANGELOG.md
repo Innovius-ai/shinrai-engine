@@ -1,8 +1,13 @@
 # Changelog
 
+## 0.1.3 — 2026-08-13
+
+- License files name the full legal entity: Innovius UG (haftungsbeschränkt).
+  No code change.
+
 ## 0.1.2 — 2026-08-13
 
-Pre-publication review release. License changed to BSD 3-Clause (Innovius UG).
+Pre-publication review release. License changed to BSD 3-Clause (Innovius UG (haftungsbeschränkt)).
 
 Fixed, found by an 8-angle review before going public:
 - Concurrency: all tokenizer work now runs in one gated worker thread — the

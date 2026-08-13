@@ -42,7 +42,7 @@ curl -s -X POST http://127.0.0.1:8080/api/analyze \
     "stats": {"chars": 63, "tokens": 18, "windows": 1}
   }],
   "timing_ms": {"total": 31.2, "inference": 28.9},
-  "version": "0.1.2", "release_channel": "public"
+  "version": "0.1.3", "release_channel": "public"
 }
 ```
 
@@ -250,5 +250,6 @@ instead.
 ## License
 
 BSD 3-Clause — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Redistributions
-must retain the copyright notice naming Innovius UG. The models are published
-separately under Apache-2.0 at https://huggingface.co/innovius.
+must retain the copyright notice naming Innovius UG (haftungsbeschränkt).
+The models are published separately under Apache-2.0 at
+https://huggingface.co/innovius.

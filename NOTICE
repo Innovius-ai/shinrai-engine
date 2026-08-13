@@ -1,12 +1,14 @@
 ShinrAI Engine
-Copyright (c) 2026 Innovius UG
+Copyright (c) 2026 Innovius UG (haftungsbeschränkt)
 
 Licensed under the BSD 3-Clause License (see LICENSE). Redistributions in
-source or binary form must retain the copyright notice naming Innovius UG.
+source or binary form must retain the copyright notice naming
+Innovius UG (haftungsbeschränkt).
 
 src/shinrai_pii_runtime/ is a generated copy of the torch-free inference
-runtime from the ShinrAI model training repository. It is Innovius UG's own
-work and is licensed here under the same BSD 3-Clause License.
+runtime from the ShinrAI model training repository. It is the own work of
+Innovius UG (haftungsbeschränkt) and is licensed here under the same
+BSD 3-Clause License.
 
 The ShinrAI PII detection models are published separately at
 https://huggingface.co/innovius under their own license (Apache License 2.0).
