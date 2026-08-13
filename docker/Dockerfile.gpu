@@ -36,7 +36,8 @@ RUN pip install --no-cache-dir . "onnxruntime-gpu==${ORT_GPU_VERSION}" && pip ca
 ENV PYTHONUNBUFFERED=1 \
     SHINRAI_MODEL_CACHE=/models \
     SHINRAI_EXECUTION_PROVIDER=cuda \
-    HF_HUB_DISABLE_TELEMETRY=1
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HOME=/models/.hf-cache
 
 RUN mkdir -p /models && chown srv:srv /models
 VOLUME /models
