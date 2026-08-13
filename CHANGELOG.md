@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — 2026-08-13
+
+- Fix release CI: image tags were built with literal quote characters on tag
+  pipelines (kaniko refused the destination). No runtime change.
+
 ## 0.1.0 — 2026-08-13
 
 Initial public release.
