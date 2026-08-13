@@ -27,6 +27,9 @@ RUN apt-get update \
 RUN python3 -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 
+LABEL org.opencontainers.image.source="https://github.com/Innovius-ai/shinrai-engine" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE NOTICE /app/
 COPY src /app/src
