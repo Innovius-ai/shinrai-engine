@@ -3,8 +3,9 @@
 Golden files are per-model lists of {text, entities} produced at release time
 (fp32). Sources, in order: <bundle>/golden-predictions.json (present in
 mounted release bundles), else a packaged fallback under
-shinrai_engine/golden/ matched by bundle-dir basename or model name (the HF
-bundles do not carry the golden file).
+shinrai_engine/golden/ resolved by EXACT identity — bundle-dir basename or
+the install marker's repo basename (the HF bundles do not carry the golden
+file).
 
 fp32 compares strictly (span/text/type/tier equality, confidence within 1e-3
 — ONNX-vs-torch parity is ~3.5e-05); q8/int4 compare leniently (entities
@@ -25,17 +26,41 @@ from .registry import LoadedModel
 CONFIDENCE_TOLERANCE = 1e-3
 
 
+def _marker_repo_basename(bundle_dir: Path) -> str | None:
+    try:
+        marker = json.loads((bundle_dir / ".shinrai-complete").read_text(encoding="utf-8"))
+        repo = str(marker.get("repo", ""))
+        return repo.rsplit("/", 1)[-1] or None
+    except (OSError, ValueError):
+        return None
+
+
 def load_golden(bundle_dir: Path, model_name: str) -> list[dict] | None:
-    candidate = bundle_dir / "golden-predictions.json"
-    if candidate.is_file():
-        return json.loads(candidate.read_text(encoding="utf-8"))
-    package_dir = resources.files("shinrai_engine") / "golden"
-    for entry in package_dir.iterdir():
-        if not entry.name.endswith(".json"):
-            continue
-        stem = entry.name[: -len(".json")]
-        if stem == bundle_dir.name or model_name in stem:
-            return json.loads(entry.read_text(encoding="utf-8"))
+    """The reference predictions for THIS bundle, by exact identity only.
+
+    Order: the bundle's own golden file; else a packaged golden whose stem
+    exactly matches the bundle dir name or the downloaded repo's basename
+    (from the install marker). Never by substring — an operator naming a
+    model 'v1' must not inherit v1.1's goldens and strict-fail a healthy
+    deployment. Any unreadable file is a skip, not a startup crash: the
+    self-test reports on models, it must never take one down by itself.
+    """
+    try:
+        candidate = bundle_dir / "golden-predictions.json"
+        if candidate.is_file():
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        wanted = {bundle_dir.name}
+        repo_basename = _marker_repo_basename(bundle_dir)
+        if repo_basename:
+            wanted.add(repo_basename)
+        package_dir = resources.files("shinrai_engine") / "golden"
+        for entry in package_dir.iterdir():
+            if not entry.name.endswith(".json"):
+                continue
+            if entry.name[: -len(".json")] in wanted:
+                return json.loads(entry.read_text(encoding="utf-8"))
+    except Exception:
+        return None
     return None
 
 
@@ -96,31 +121,62 @@ def run_selftest(model: LoadedModel, log=print) -> bool:
 
 
 def run_all(registry: dict[str, LoadedModel], mode: str, log=print) -> None:
-    """mode: off | warn | strict. strict raises on any failure."""
+    """mode: off | warn | strict. strict raises on any failure; every other
+    problem is reported and recorded on the model (surfaced on /healthz),
+    never allowed to take the service down by itself."""
     if mode == "off":
+        for model in registry.values():
+            model.self_test = "off"
         return
-    all_ok = all(run_selftest(model, log=log) for model in registry.values())
+    all_ok = True
+    for model in registry.values():
+        try:
+            golden = load_golden(model.bundle_dir, model.name)
+            if golden is None:
+                log(f"[selftest] {model.name}: no golden file found — skipped")
+                model.self_test = "skipped"
+                continue
+            ok = run_selftest(model, log=log)
+        except Exception as exc:
+            log(f"[selftest] {model.name}: errored ({exc}) — recorded as failed")
+            ok = False
+        model.self_test = "passed" if ok else "failed"
+        all_ok = all_ok and ok
     if not all_ok and mode == "strict":
         raise SystemExit("[selftest] FAILED and SHINRAI_SELF_TEST=strict — refusing to serve")
 
 
 def check_url(base_url: str, api_key: str | None = None) -> int:
-    """Black-box smoke against a running engine; returns a process exit code."""
-    import httpx
+    """Black-box smoke against a running engine; returns a process exit code.
 
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    health = httpx.get(f"{base_url}/healthz", timeout=10)
-    if health.status_code != 200 or health.json().get("status") != "ok":
-        print(f"[selftest] {base_url}/healthz -> {health.status_code} {health.text[:200]}")
+    Stdlib only on purpose: the shipped image installs the runtime extras,
+    not the dev extras, and this command is documented to work inside it.
+    """
+    import urllib.request
+
+    def fetch(url: str, payload: dict | None = None) -> tuple[int, dict]:
+        request = urllib.request.Request(url)
+        if api_key:
+            request.add_header("Authorization", f"Bearer {api_key}")
+        if payload is not None:
+            request.add_header("Content-Type", "application/json")
+            request.data = json.dumps(payload).encode("utf-8")
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8") or "{}")
+
+    status, health = fetch(f"{base_url}/healthz")
+    if status != 200 or health.get("status") != "ok":
+        print(f"[selftest] {base_url}/healthz -> {status} {health}")
         return 1
     text = "Warmup: Lisa Müller wohnt in der Hauptstraße 10 in Berlin."
-    response = httpx.post(
-        f"{base_url}/api/analyze", json={"text": text}, headers=headers, timeout=120
-    )
-    if response.status_code != 200:
-        print(f"[selftest] analyze -> {response.status_code} {response.text[:200]}")
+    status, body = fetch(f"{base_url}/api/analyze", {"text": text})
+    if status != 200:
+        print(f"[selftest] analyze -> {status} {body}")
         return 1
-    entities = response.json()["results"][0]["entities"]
+    entities = body["results"][0]["entities"]
     for ent in entities:
         if text[ent["startIndex"] : ent["endIndex"]] != ent["text"]:
             print(f"[selftest] offsets do not slice back: {ent}")

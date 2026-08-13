@@ -90,6 +90,11 @@ def _read_api_key(env: dict[str, str]) -> str | None:
             raise ConfigError(f"SHINRAI_API_KEY_FILE {key_file!r} is not readable: {exc}") from exc
         if not key:
             raise ConfigError(f"SHINRAI_API_KEY_FILE {key_file!r} is empty")
+    if key and not key.isascii():
+        # HTTP header bytes are latin-1-decoded server-side while clients
+        # usually send UTF-8 — a non-ASCII key can never match reliably and
+        # every request would 401 with no hint why. Refuse loudly instead.
+        raise ConfigError("the API key must be ASCII (HTTP header encoding is ambiguous otherwise)")
     return key or None
 
 
@@ -125,15 +130,38 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     if self_test not in ("off", "warn", "strict"):
         raise ConfigError(f"SHINRAI_SELF_TEST={self_test!r} — expected off, warn or strict")
 
+    allow_int4 = env.get("SHINRAI_ALLOW_INT4", "").strip() == "1"
+    if precision == "int4" and not allow_int4:
+        # Fail HERE, before anything downloads: the old order fetched 257 MB
+        # and then refused, which on an emptyDir deployment turned into a
+        # crash-loop re-downloading from Hugging Face on every restart.
+        raise ConfigError(
+            "SHINRAI_PRECISION=int4 needs SHINRAI_ALLOW_INT4=1. int4 is measured "
+            "0.75-2.10 macro-F1 below fp32 and is not supported for production."
+        )
+
+    max_concurrent = _int(env, "SHINRAI_MAX_CONCURRENT", 1, minimum=1)
+    if max_concurrent > 1:
+        # The HF fast tokenizer inside the shared predictor is not safe under
+        # concurrent __call__ (Rust core raises 'Already borrowed'), and the
+        # ONNX intra-op pool already saturates the container at concurrency 1.
+        # Refused loudly rather than accepted-and-crashy; scale replicas
+        # instead. Lifted when per-slot predictors land.
+        raise ConfigError(
+            f"SHINRAI_MAX_CONCURRENT={max_concurrent} is not supported yet: the "
+            "tokenizer is not thread-safe under concurrent calls. Run more "
+            "replicas instead."
+        )
+
     return Settings(
         models=parse_model_specs(env.get("SHINRAI_MODELS", DEFAULT_MODELS)),
         model_cache=Path(env.get("SHINRAI_MODEL_CACHE", "/models")),
         precision=precision,
         onnx_file=env.get("SHINRAI_ONNX_FILE", "").strip() or None,
-        allow_int4=env.get("SHINRAI_ALLOW_INT4", "").strip() == "1",
+        allow_int4=allow_int4,
         execution_provider=execution_provider,
         threads=_int(env, "SHINRAI_THREADS", 0),
-        max_concurrent=_int(env, "SHINRAI_MAX_CONCURRENT", 1, minimum=1),
+        max_concurrent=max_concurrent,
         api_key=_read_api_key(env),
         max_text_chars=_int(env, "SHINRAI_MAX_TEXT_CHARS", 200_000, minimum=1),
         max_texts=_int(env, "SHINRAI_MAX_TEXTS", 64, minimum=1),

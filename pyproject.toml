@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shinrai-engine"
-version = "0.1.1"
+version = "0.1.2"
 description = "Self-hostable HTTP inference service for the ShinrAI PII detection models (ONNX, CPU/GPU)."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = { text = "BSD-3-Clause" }
 authors = [{ name = "Innovius" }]
 # onnxruntime is installed via the [cpu] or [gpu] extra so the CPU and CUDA
 # wheels never end up side by side in one environment.

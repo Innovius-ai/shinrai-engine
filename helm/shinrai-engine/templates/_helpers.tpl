@@ -29,12 +29,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "shinrai-engine.imageTag" -}}
-{{- if .Values.image.tag -}}
-{{- .Values.image.tag -}}
-{{- else if .Values.gpu.enabled -}}
-{{- printf "%s-gpu" .Chart.AppVersion -}}
+{{- /* CI publishes v-prefixed tags (v0.1.2), never the bare appVersion —
+       and gpu.enabled must keep its -gpu suffix even when a tag is pinned,
+       or a pinned GPU deployment silently runs the CPU-only image. */ -}}
+{{- $base := .Values.image.tag | default (printf "v%s" .Chart.AppVersion) -}}
+{{- $base = trimSuffix "-gpu" $base -}}
+{{- if .Values.gpu.enabled -}}
+{{- printf "%s-gpu" $base -}}
 {{- else -}}
-{{- .Chart.AppVersion -}}
+{{- $base -}}
 {{- end -}}
 {{- end -}}
 

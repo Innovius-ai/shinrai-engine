@@ -73,8 +73,11 @@ resources:
     cpu: "4"
     memory: 4Gi
 
-# Extra environment for the container (map of NAME: value). SHINRAI_THREADS
-# defaults to the CPU limit's whole cores if unset here.
+# Extra environment for the container (map of NAME: value). Keep
+# SHINRAI_THREADS aligned with resources.limits.cpu yourself — without it
+# onnxruntime sizes its pool from the HOST's cores and thrashes against the
+# cgroup limit. Keys the chart sets explicitly (models/precision/api key)
+# are ignored here so they cannot silently override the first-class values.
 env:
   SHINRAI_THREADS: "4"
 

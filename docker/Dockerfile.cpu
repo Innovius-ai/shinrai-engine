@@ -15,7 +15,7 @@ FROM python:3.12-slim
 RUN useradd --create-home --uid 10001 srv
 
 LABEL org.opencontainers.image.source="https://github.com/Innovius-ai/shinrai-engine" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="BSD-3-Clause"
 
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE NOTICE /app/

@@ -31,7 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from shinrai_pii_runtime import to_legacy_entities
+from shinrai_pii_runtime import scrub_invisibles, to_legacy_entities
 
 from . import __version__
 from .config import Settings
@@ -68,7 +68,12 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
             return
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
-        if scheme.lower() == "bearer" and hmac.compare_digest(token.strip(), settings.api_key):
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII str
+        # input, which turned a stray high-byte token (or a non-ASCII
+        # configured key) into 500s instead of 401s.
+        if scheme.lower() == "bearer" and hmac.compare_digest(
+            token.strip().encode("utf-8"), settings.api_key.encode("utf-8")
+        ):
             return
         raise HTTPException(status_code=401, detail="missing or invalid bearer token")
 
@@ -101,9 +106,23 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
             "status": "ok",
             "models": sorted(registry),
             "device": device,
+            # Back-compat flat fields describe the DEFAULT model; the
+            # per-model truth (multi-model deployments, silent CUDA
+            # fallback on a second graph) lives in models_detail.
             "precision": default_model.precision,
             "precision_warning": default_model.precision_warning,
             "providers": default_model.providers,
+            "self_test": default_model.self_test,
+            "models_detail": [
+                {
+                    "name": m.name,
+                    "precision": m.precision,
+                    "precision_warning": m.precision_warning,
+                    "providers": m.providers,
+                    "self_test": m.self_test,
+                }
+                for m in registry.values()
+            ],
         }
 
     @app.get("/metrics", dependencies=auth_dep)
@@ -153,14 +172,29 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                     status_code=400,
                 )
 
+            # Length-preserving invisible-char scrub BEFORE tokenization (same
+            # slot as the reference service): zero-width/bidi/tag characters
+            # would otherwise reach the model as opaque tokens and hide the
+            # very entities this service exists to find. Each scrubbed char
+            # becomes one space, so the returned offsets stay valid for the
+            # caller's original text.
+            texts = [scrub_invisibles(t) for t in texts]
+
             predictor = model.predictor
             inference_started = time.time()
             async with inference_gate:
-                per_text = await asyncio.to_thread(predictor.predict, texts)
+                # EVERYTHING that touches the tokenizer runs in this one
+                # gated thread: the HF fast tokenizer is not safe under
+                # concurrent calls (Rust core: 'Already borrowed'), and any
+                # tokenizer work left on the event loop stalls /healthz for
+                # the length of a long document.
+                per_text, stats = await asyncio.to_thread(
+                    _predict_with_stats, predictor, texts
+                )
             inference_ms = round((time.time() - inference_started) * 1000, 1)
 
             results = []
-            for text, entities in zip(texts, per_text, strict=True):
+            for text, entities, text_stats in zip(texts, per_text, stats, strict=True):
                 legacy = to_legacy_entities(
                     entities,
                     predictor.label_space,
@@ -168,25 +202,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                     text=text,
                     merge_persons=request.merge_persons,
                 )
-                n_tokens = len(
-                    predictor.tokenizer(text, add_special_tokens=True)["input_ids"]
-                )
-                window, stride = predictor.window, predictor.stride
-                n_windows = (
-                    1
-                    if n_tokens <= window
-                    else 1 + -(-(n_tokens - window) // (window - stride))
-                )
-                results.append(
-                    {
-                        "entities": legacy,
-                        "stats": {
-                            "chars": len(text),
-                            "tokens": n_tokens,
-                            "windows": n_windows,
-                        },
-                    }
-                )
+                results.append({"entities": legacy, "stats": text_stats})
             ok = True
             return {
                 "model": model_name,
@@ -204,6 +220,27 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
             )
 
     return app
+
+
+def _predict_with_stats(predictor, texts: list[str]) -> tuple[list, list[dict]]:
+    """Inference plus per-text stats, in ONE worker thread.
+
+    Runs under the inference gate on purpose — every tokenizer touch must be
+    serialized (see the call site). The window count uses the tokenizer's real
+    step: each window carries `window - 2` content tokens (2 specials), so the
+    advance per extra window is `window - 2 - stride`, not `window - stride` —
+    the naive formula under-reported one window per ~220 on long documents.
+    """
+    per_text = predictor.predict(texts)
+    window, stride = predictor.window, predictor.stride
+    content, step = window - 2, window - 2 - stride
+    stats = []
+    for text in texts:
+        n_tokens = len(predictor.tokenizer(text, add_special_tokens=True)["input_ids"])
+        n_content = max(n_tokens - 2, 0)
+        n_windows = 1 if n_content <= content else 1 + -(-(n_content - content) // step)
+        stats.append({"chars": len(text), "tokens": n_tokens, "windows": n_windows})
+    return per_text, stats
 
 
 def _model_info(model: LoadedModel, default_name: str) -> dict:

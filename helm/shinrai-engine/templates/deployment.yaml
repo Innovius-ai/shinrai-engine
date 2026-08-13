@@ -59,8 +59,14 @@ spec:
                   key: {{ .Values.model.hfTokenSecret.key }}
             {{- end }}
             {{- range $name, $value := .Values.env }}
+            {{- /* Keys the chart sets explicitly above must not be duplicated
+                   here: Kubernetes takes the LAST duplicate, which would let
+                   env.SHINRAI_PRECISION silently override model.precision
+                   while NOTES keeps warning off the ignored value. */ -}}
+            {{- if not (has $name (list "SHINRAI_MODELS" "SHINRAI_PRECISION" "SHINRAI_ALLOW_INT4" "SHINRAI_API_KEY" "HF_TOKEN")) }}
             - name: {{ $name }}
               value: {{ $value | quote }}
+            {{- end }}
             {{- end }}
           volumeMounts:
             - name: models
@@ -83,12 +89,11 @@ spec:
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           resources:
             {{- if .Values.gpu.enabled }}
-            requests:
-              {{- toYaml .Values.resources.requests | nindent 14 }}
-              nvidia.com/gpu: 1
-            limits:
-              {{- toYaml .Values.resources.limits | nindent 14 }}
-              nvidia.com/gpu: 1
+            {{- /* Merge instead of reaching into .requests/.limits by name:
+                   a wholesale resources override without one of them would
+                   otherwise render literal null and break the manifest. */ -}}
+            {{- $gpu := dict "nvidia.com/gpu" 1 }}
+            {{- toYaml (mergeOverwrite (deepCopy .Values.resources) (dict "requests" $gpu "limits" $gpu)) | nindent 12 }}
             {{- else }}
             {{- toYaml .Values.resources | nindent 12 }}
             {{- end }}

@@ -9,3 +9,4 @@ from .adapter import (  # noqa: F401
     to_legacy_entities,
 )
 from .onnx_numpy import NumpyOnnxPredictor  # noqa: F401
+from .scrub import scrub_invisibles  # noqa: F401

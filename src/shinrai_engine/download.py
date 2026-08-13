@@ -49,23 +49,23 @@ def parse_source(source: str) -> HfSource | Path:
     if source.startswith("hf://"):
         ref = source[len("hf://") :]
         repo_id, _, revision = ref.partition("@")
-        if repo_id.count("/") != 1 or not all(repo_id.split("/")):
+        from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+        try:
+            validate_repo_id(repo_id)
+        except HFValidationError as exc:
             raise ModelSourceError(
-                f"{source!r}: expected hf://org/repo[@revision]"
-            )
+                f"{source!r}: expected hf://org/repo[@revision] ({exc})"
+            ) from None
+        if "/" not in repo_id:
+            raise ModelSourceError(f"{source!r}: expected hf://org/repo[@revision]")
         return HfSource(repo_id=repo_id, revision=revision or "main")
     return Path(source)
 
 
-def sha256_file(path: Path, chunk_bytes: int = 1 << 20) -> str:
-    digest = hashlib.sha256()
+def sha256_file(path: Path) -> str:
     with open(path, "rb") as fh:
-        while True:
-            chunk = fh.read(chunk_bytes)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
 def verify_against_manifest(bundle_dir: Path, onnx_relpath: str, log=print) -> None:
@@ -96,13 +96,18 @@ def verify_against_manifest(bundle_dir: Path, onnx_relpath: str, log=print) -> N
     log(f"[engine] {bundle_dir.name}: sha256 verified ({Path(onnx_relpath).name})")
 
 
-def _marker_matches(bundle_dir: Path, onnx_relpath: str) -> bool:
+def _marker_matches(bundle_dir: Path, onnx_relpath: str, source: HfSource) -> bool:
     marker = bundle_dir / MARKER
     if not marker.is_file():
         return False
     try:
         recorded = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return False
+    # Identity first: a cache hit for the WRONG repo or revision would serve
+    # stale weights forever while logging 'using cached bundle' — switching
+    # the source under the same model name must invalidate.
+    if recorded.get("repo") != source.repo_id or recorded.get("revision") != source.revision:
         return False
     return onnx_relpath in recorded.get("files", []) and (bundle_dir / onnx_relpath).is_file()
 
@@ -132,10 +137,18 @@ def _download_into(staging: Path, source: HfSource, onnx_relpath: str, log=print
         fetch(relpath, required=True)
         fetched.append(relpath)
 
-    # The labels file name comes from config.json's shinrai block.
+    # The labels file name comes from config.json's shinrai block — which is
+    # DOWNLOADED content. A hostile repo could point it outside the staging
+    # dir (huggingface_hub only guards traversal on Windows), so only a plain
+    # filename at the bundle root is accepted.
     config = json.loads((staging / "config.json").read_text(encoding="utf-8"))
     shinrai_block = config.get("shinrai") or {}
-    labels_file = shinrai_block.get("labels_file", "labels-v2.0.yaml")
+    labels_file = str(shinrai_block.get("labels_file", "labels-v2.0.yaml"))
+    if "/" in labels_file or "\\" in labels_file or ".." in labels_file or not labels_file:
+        raise ModelSourceError(
+            f"hf://{source.repo_id}: config.json labels_file {labels_file!r} is not a "
+            "plain filename — refusing (path traversal guard)"
+        )
     fetch(labels_file, required=True)
     fetched.append(labels_file)
 
@@ -168,7 +181,7 @@ def ensure_model(
         if not bundle_dir.is_dir():
             raise ModelSourceError(f"{name}: model directory {bundle_dir} does not exist")
         missing = [
-            rel for rel in ("config.json", "tokenizer/tokenizer.json", onnx_relpath)
+            rel for rel in (*_REQUIRED_FILES, onnx_relpath)
             if not (bundle_dir / rel).is_file()
         ]
         if missing:
@@ -176,37 +189,47 @@ def ensure_model(
         return bundle_dir
 
     bundle_dir = cache_root / name
-    if _marker_matches(bundle_dir, onnx_relpath):
+    if _marker_matches(bundle_dir, onnx_relpath, parsed):
         log(f"[engine] {name}: using cached bundle {bundle_dir}")
         return bundle_dir
 
     cache_root.mkdir(parents=True, exist_ok=True)
-    staging = cache_root / f".staging-{name}-{os.getpid()}"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
+    # Stable staging path (no pid — the container is always pid 1 anyway),
+    # REUSED across attempts: hf_hub_download resumes its .incomplete files,
+    # so a killed 90%-done 1.2 GB download keeps its bytes. Partials are kept
+    # on failure for the same reason; success renames the whole dir away.
+    staging = cache_root / f".staging-{name}"
+    staging.mkdir(parents=True, exist_ok=True)
     try:
         fetched = _download_into(staging, parsed, onnx_relpath, log=log)
         verify_against_manifest(staging, onnx_relpath, log=log)
-        # A previous partial/foreign dir without a matching marker is replaced.
-        if bundle_dir.exists():
-            shutil.rmtree(bundle_dir)
-        (staging / MARKER).write_text(
-            json.dumps(
-                {
-                    "name": name,
-                    "repo": parsed.repo_id,
-                    "revision": parsed.revision,
-                    "files": fetched,
-                    "downloaded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        os.rename(staging, bundle_dir)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+    except ModelSourceError:
+        # Verification failures are not resumable state — a corrupt file
+        # would just fail again. Start clean next time.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    except Exception:
+        log(f"[engine] {name}: download interrupted — partial kept in {staging} for resume")
+        raise
+    # A previous partial/foreign dir without a matching marker is replaced.
+    if bundle_dir.exists():
+        shutil.rmtree(bundle_dir)
+    (staging / MARKER).write_text(
+        json.dumps(
+            {
+                "name": name,
+                "repo": parsed.repo_id,
+                "revision": parsed.revision,
+                "files": fetched,
+                "downloaded_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    os.rename(staging, bundle_dir)
+    # huggingface_hub leaves its metadata cache inside local_dir; it is
+    # install litter once the bundle is final.
+    shutil.rmtree(bundle_dir / ".cache", ignore_errors=True)
     log(f"[engine] {name}: installed hf://{parsed.repo_id}@{parsed.revision} -> {bundle_dir}")
     return bundle_dir

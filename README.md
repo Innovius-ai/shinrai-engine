@@ -2,7 +2,7 @@
 
 Self-hostable HTTP inference service for the [ShinrAI PII detection
 models](https://huggingface.co/innovius) — run PII detection centrally on
-your own hardware, CPU or NVIDIA GPU. Apache-2.0.
+your own hardware, CPU or NVIDIA GPU. BSD-3-Clause.
 
 The engine answers one question — *which spans of this text are personal
 data?* — over a small, stable HTTP API. It is the detection backend for the
@@ -42,7 +42,7 @@ curl -s -X POST http://127.0.0.1:8080/api/analyze \
     "stats": {"chars": 63, "tokens": 18, "windows": 1}
   }],
   "timing_ms": {"total": 31.2, "inference": 28.9},
-  "version": "0.1.0", "release_channel": "public"
+  "version": "0.1.2", "release_channel": "public"
 }
 ```
 
@@ -115,11 +115,12 @@ Everything is an env var:
 | `SHINRAI_ALLOW_INT4` | – | Must be `1` for int4 graphs to load. |
 | `SHINRAI_EXECUTION_PROVIDER` | `auto` | `auto` \| `cpu` \| `cuda`. `cuda` hard-fails if unavailable; `auto` falls back loudly. |
 | `SHINRAI_THREADS` | ORT default | `intra_op_num_threads`. |
-| `SHINRAI_MAX_CONCURRENT` | `1` | Concurrent inferences (semaphore). |
+| `SHINRAI_MAX_CONCURRENT` | `1` | Fixed at 1 for now (the tokenizer is not thread-safe under concurrent calls) — scale replicas instead. |
 | `SHINRAI_API_KEY` / `SHINRAI_API_KEY_FILE` | – | Enables bearer auth on `/api/*` and `/metrics`. |
 | `SHINRAI_MAX_TEXT_CHARS` / `SHINRAI_MAX_TEXTS` | `200000` / `64` | Request limits (413 beyond). |
 | `SHINRAI_HOST` / `SHINRAI_PORT` | `0.0.0.0` / `8080` | Bind address. |
-| `SHINRAI_SELF_TEST` | `warn` | `off` \| `warn` \| `strict` — golden self-test at startup. |
+| `SHINRAI_SELF_TEST` | `warn` | `off` \| `warn` \| `strict` — golden self-test at startup; verdict on `/healthz`. |
+| `SHINRAI_RELEASE_CHANNEL` | `public` | Echoed in `/api/analyze` and `/metrics` responses. |
 | `HF_TOKEN` / `HF_HUB_OFFLINE` | – | Private repos / air-gapped operation. |
 
 ## API
@@ -131,7 +132,7 @@ consumers must convert — a `ü` is one code point but two UTF-8 bytes.
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /` | open | Service info: version, models, precision, auth state. |
-| `GET /healthz` (also `/health`) | open | 200 only when every model is loaded, warmed up and self-tested. Reports `precision`, `precision_warning`, `providers`. |
+| `GET /healthz` (also `/health`) | open | 200 only when every model is loaded and warmed up. Reports `precision`, `precision_warning`, `providers`, the golden `self_test` verdict, and per-model `models_detail`. |
 | `GET /metrics` | gated | Totals + rolling p50/p95 (JSON). |
 | `GET /api/models` | gated | Per model: `name`, `default`, `window`, `precision`. |
 | `POST /api/analyze` | gated | The inference call. |
@@ -248,5 +249,6 @@ instead.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). The models are
-published separately under Apache-2.0 at https://huggingface.co/innovius.
+BSD 3-Clause — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Redistributions
+must retain the copyright notice naming Innovius UG. The models are published
+separately under Apache-2.0 at https://huggingface.co/innovius.

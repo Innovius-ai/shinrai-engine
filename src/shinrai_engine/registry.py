@@ -30,12 +30,13 @@ class LoadedModel:
     name: str
     predictor: NumpyOnnxPredictor
     bundle_dir: Path
-    onnx_relpath: str
     precision: str
     precision_warning: str | None
     claim_mismatch: bool
     providers: list[str] = field(default_factory=list)
-    default: bool = False
+    # Golden self-test verdict, set by selftest.run_all and surfaced on
+    # /healthz: off | not_run | passed | failed | skipped.
+    self_test: str = "not_run"
 
     @property
     def cuda_active(self) -> bool:
@@ -88,7 +89,6 @@ def load_model(
     source: str,
     settings: Settings,
     *,
-    default: bool = False,
     log=print,
 ) -> LoadedModel:
     onnx_relpath = settings.onnx_relpath()
@@ -106,6 +106,17 @@ def load_model(
             f"[engine] {name}: file claims {claimed} but the graph scan says {actual} — "
             "trusting the scan; the file is mislabeled."
         )
+    # Third source of truth: the exporter's sha-verified MANIFEST. Warnings
+    # are fail-safe — when the declaration and the scan disagree, the LESS
+    # trusted precision wins so a wrong label can never silence a warning.
+    declared = prec.manifest_precision(bundle_dir, onnx_relpath)
+    if declared is not None and declared != actual:
+        log(
+            f"[engine] {name}: MANIFEST declares {declared}, the graph scan says "
+            f"{actual} — using the more conservative verdict."
+        )
+        actual = prec.more_conservative(declared, actual)
+        mismatch = True
     if actual == prec.INT4 and not settings.allow_int4:
         raise ProviderError(f"{name}: {prec.INT4_REFUSAL}")
 
@@ -124,12 +135,10 @@ def load_model(
         name=name,
         predictor=predictor,
         bundle_dir=bundle_dir,
-        onnx_relpath=onnx_relpath,
         precision=actual,
         precision_warning=warning,
         claim_mismatch=mismatch,
         providers=active,
-        default=default,
     )
 
 
@@ -139,9 +148,7 @@ def build_registry(settings: Settings, log=print) -> dict[str, LoadedModel]:
     registry: dict[str, LoadedModel] = {}
     for name, source in settings.models:
         started = time.time()
-        model = load_model(
-            name, source, settings, default=(name == settings.default_model), log=log
-        )
+        model = load_model(name, source, settings, log=log)
         registry[name] = model
         log(
             f"[engine] mounted {name} [{model.precision}] ({model.bundle_dir}) via "

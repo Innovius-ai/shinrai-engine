@@ -79,6 +79,20 @@ def test_analyze_batch_texts(tiny_registry):
     assert len(body["results"]) == 2
 
 
+def test_analyze_scrubs_invisible_characters(tiny_registry):
+    """Zero-width characters must not reach the model (they hide entities)
+    and must not leak back in entity surfaces. Offsets stay valid because the
+    scrub is length-preserving."""
+    client = make_client(tiny_registry)
+    text = "Anna\u200bMiller lives in Berlin."
+    body = client.post("/api/analyze", json={"text": text}).json()
+    result = body["results"][0]
+    assert result["stats"]["chars"] == len(text)
+    for ent in result["entities"]:
+        assert "\u200b" not in ent["text"]
+        assert 0 <= ent["startIndex"] <= ent["endIndex"] <= len(text)
+
+
 def test_analyze_threshold_filters(tiny_registry):
     client = make_client(tiny_registry)
     text = "Anna Miller lives in Berlin."

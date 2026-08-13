@@ -76,13 +76,18 @@ def to_legacy_entities(
     text: str | None = None,
     merge_persons: bool = True,
 ) -> list[dict]:
+    # Threshold BEFORE merging. Merging first took min(confidence) across the
+    # pair, so a weak family-name span (0.55) dragged a strong given name
+    # (0.98) under the gate and the response carried NO person at all — while
+    # merge_persons=false correctly returned the given name. A missed person
+    # is the worst possible outcome for a redaction engine; merging must only
+    # ever combine spans that individually survive the gate.
+    entities = [e for e in entities if float(e.get("confidence", 1.0)) >= threshold]
     if merge_persons:
         entities = merge_person_spans(entities, text)
     legacy: list[dict] = []
     for ent in entities:
         confidence = float(ent.get("confidence", 1.0))
-        if confidence < threshold:
-            continue
         attrs = ent.get("attrs") or {}
         api_type = label_space.api_type(ent["type"], attrs.get("name_part"))
         item = {

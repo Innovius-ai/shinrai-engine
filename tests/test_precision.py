@@ -59,24 +59,52 @@ def test_warnings_wording():
 
 
 def test_int4_gate_refuses_without_optin(tiny_bundle, tmp_path):
+    """The scan-based backstop: a CUSTOM file that turns out int4 is refused
+    even though the config-level pair check could not see it coming."""
     from shinrai_engine.config import load_settings
     from shinrai_engine.registry import ProviderError, load_model
 
-    # Give the bundle an int4-looking file (scan classifies by content).
-    q4 = tiny_bundle / "quant" / "model-q4.onnx"
+    q4 = tiny_bundle / "quant" / "model-custom.onnx"
     q4.write_bytes(b"MatMulNBits fake graph")
     try:
         settings = load_settings(
             {
                 "SHINRAI_MODELS": f"tiny={tiny_bundle}",
                 "SHINRAI_MODEL_CACHE": str(tmp_path),
-                "SHINRAI_PRECISION": "int4",
+                "SHINRAI_ONNX_FILE": "quant/model-custom.onnx",
             }
         )
         with pytest.raises(ProviderError, match="SHINRAI_ALLOW_INT4"):
             load_model("tiny", str(tiny_bundle), settings, log=lambda *a: None)
     finally:
         q4.unlink()
+
+
+def test_manifest_disagreement_takes_conservative_verdict(tiny_bundle, tmp_path):
+    """A sha-verified MANIFEST declaring int8 for a graph that scans fp32 must
+    not lose its warning to the scan — the less trusted verdict wins."""
+    import json
+    import shutil
+
+    from shinrai_engine.config import load_settings
+    from shinrai_engine.registry import load_model
+
+    bundle_copy = tmp_path / "bundle"
+    shutil.copytree(tiny_bundle, bundle_copy)
+    manifest_path = bundle_copy / "quant" / "MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["artifacts"][0]["format"] = "onnx-int8-dynamic"
+    manifest_path.write_text(json.dumps(manifest))
+    settings = load_settings(
+        {
+            "SHINRAI_MODELS": f"tiny={bundle_copy}",
+            "SHINRAI_MODEL_CACHE": str(tmp_path / "cache"),
+        }
+    )
+    model = load_model("tiny", str(bundle_copy), settings, log=lambda *a: None)
+    assert model.precision == "q8"
+    assert model.precision_warning is not None
+    assert model.claim_mismatch is True
 
 
 def test_mislabeled_file_loads_with_scan_verdict(tiny_bundle, tmp_path):

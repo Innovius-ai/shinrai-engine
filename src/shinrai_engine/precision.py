@@ -96,6 +96,45 @@ def resolve_precision(path: str | Path, claimed: str | None) -> tuple[str, bool]
     return actual, mismatch
 
 
+# Fewer bits = less trusted. Used to pick the fail-safe verdict when the
+# exporter's declaration and the graph scan disagree: warnings must survive a
+# wrong label in either direction.
+_BADNESS = {INT4: 0, Q8: 1, FP32: 2}
+
+
+def more_conservative(a: str, b: str) -> str:
+    return a if _BADNESS.get(a, 2) <= _BADNESS.get(b, 2) else b
+
+
+def manifest_precision(bundle_dir: str | Path, onnx_relpath: str) -> str | None:
+    """The exporter's declared precision for this artifact, from the bundle's
+    quant/MANIFEST.json (sha-verified at download time). None when the bundle
+    has no manifest or the file is not listed."""
+    import json
+
+    manifest_path = Path(bundle_dir) / "quant" / "MANIFEST.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = next(
+        (a for a in manifest.get("artifacts", []) if a.get("file") == Path(onnx_relpath).name),
+        None,
+    )
+    if not entry:
+        return None
+    fmt = str(entry.get("format", "")).lower()
+    if "int4" in fmt or "q4" in fmt:
+        return INT4
+    if "int8" in fmt or "q8" in fmt:
+        return Q8
+    if "fp32" in fmt or "float32" in fmt:
+        return FP32
+    return None
+
+
 def warning_for(precision: str, *, cuda_active: bool = False) -> str | None:
     if precision == Q8:
         return WARNING_Q8 + (WARNING_Q8_CUDA if cuda_active else "")

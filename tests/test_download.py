@@ -86,6 +86,78 @@ def test_hf_download_reuses_cache(fake_hub, tmp_path):
     assert len(fake_hub) == first_calls, "second call must hit the marker cache"
 
 
+def test_marker_invalidates_on_source_change(fake_hub, tmp_path):
+    """Changing the repo or pinning a revision under the same name must
+    re-stage — the old behavior served stale weights forever."""
+    cache = tmp_path / "cache"
+    ensure_model("v1", "hf://innovius/tiny", cache, ONNX_REL, log=lambda *a: None)
+    first = len(fake_hub)
+    # Different revision, same name: cache must MISS.
+    ensure_model("v1", "hf://innovius/tiny@pinned", cache, ONNX_REL, log=lambda *a: None)
+    assert len(fake_hub) > first, "revision change must invalidate the marker"
+    second = len(fake_hub)
+    # Different repo, same name: cache must MISS again.
+    ensure_model("v1", "hf://innovius/other-repo", cache, ONNX_REL, log=lambda *a: None)
+    assert len(fake_hub) > second, "repo change must invalidate the marker"
+
+
+def test_hostile_labels_file_is_refused(tiny_bundle, monkeypatch, tmp_path):
+    """config.json is DOWNLOADED content; a traversal path in labels_file
+    must be refused before anything is written outside staging."""
+    import json as json_mod
+
+    hostile = tmp_path / "hostile-src"
+    shutil.copytree(tiny_bundle, hostile)
+    config_path = hostile / "config.json"
+    config = json_mod.loads(config_path.read_text())
+    config["shinrai"]["labels_file"] = "../../evil.yaml"
+    config_path.write_text(json_mod.dumps(config))
+
+    def fake_download(*, repo_id, filename, revision, local_dir):
+        source = hostile / filename
+        if not source.is_file():
+            from huggingface_hub.errors import EntryNotFoundError
+
+            raise EntryNotFoundError(f"no {filename}")
+        target = Path(local_dir) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(source, target)
+        return str(target)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    with pytest.raises(ModelSourceError, match="path traversal"):
+        ensure_model("v1", "hf://innovius/tiny", tmp_path / "cache", ONNX_REL,
+                     log=lambda *a: None)
+
+
+def test_interrupted_download_keeps_partial_for_resume(tiny_bundle, monkeypatch, tmp_path):
+    """A network failure mid-download must keep the staging dir (resume);
+    only verification failures start clean."""
+    calls = {"n": 0}
+
+    def flaky_download(*, repo_id, filename, revision, local_dir):
+        calls["n"] += 1
+        if calls["n"] > 2:
+            raise ConnectionError("link dropped")
+        source = tiny_bundle / filename
+        target = Path(local_dir) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(source, target)
+        return str(target)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", flaky_download)
+    cache = tmp_path / "cache"
+    with pytest.raises(ConnectionError):
+        ensure_model("v1", "hf://innovius/tiny", cache, ONNX_REL, log=lambda *a: None)
+    staged = list(cache.glob(".staging-*"))
+    assert staged, "partial download must be kept for resume"
+    assert (staged[0] / "config.json").is_file()
+
+
 def test_sha_mismatch_hard_fails(tiny_bundle, monkeypatch, tmp_path):
     corrupted = tmp_path / "corrupted-src"
     shutil.copytree(tiny_bundle, corrupted)

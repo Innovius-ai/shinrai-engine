@@ -55,8 +55,31 @@ def test_no_golden_is_a_skip(tiny_registry):
 
 
 def test_packaged_golden_resolves_for_v11(tmp_path):
-    """The packaged fallback matches the v1.1 bundle-dir/model naming."""
+    """The packaged fallback matches by EXACT bundle-dir name."""
     bundle_dir = tmp_path / "shinrai-pii-pathfinder-m-v1.1"
     bundle_dir.mkdir()
     golden = load_golden(bundle_dir, "v1.1")
     assert golden and golden[0]["entities"], "packaged golden must load for v1.1"
+
+
+def test_packaged_golden_resolves_via_install_marker(tmp_path):
+    """HF installs are named by the operator (dir 'v1.1'); identity comes
+    from the marker's repo field, never from name substrings."""
+    bundle_dir = tmp_path / "v1.1"
+    bundle_dir.mkdir()
+    (bundle_dir / ".shinrai-complete").write_text(
+        json.dumps({"repo": "innovius/shinrai-pii-pathfinder-m-v1.1", "revision": "main"})
+    )
+    golden = load_golden(bundle_dir, "v1.1")
+    assert golden and golden[0]["entities"]
+
+
+def test_no_substring_matching(tmp_path):
+    """A model named 'v1' must NOT inherit v1.1's goldens ('v1' is a
+    substring of the packaged stem) — that strict-failed healthy models."""
+    bundle_dir = tmp_path / "v1"
+    bundle_dir.mkdir()
+    assert load_golden(bundle_dir, "v1") is None
+    # Corrupt marker: a skip, never a crash.
+    (bundle_dir / ".shinrai-complete").write_text("{not json")
+    assert load_golden(bundle_dir, "v1") is None

@@ -30,7 +30,10 @@ def test_parse_model_specs():
 
 def test_precision_selects_file():
     assert load_settings({"SHINRAI_PRECISION": "q8"}).onnx_relpath() == "quant/model-q8.onnx"
-    assert load_settings({"SHINRAI_PRECISION": "int4"}).onnx_relpath() == "quant/model-q4.onnx"
+    assert (
+        load_settings({"SHINRAI_PRECISION": "int4", "SHINRAI_ALLOW_INT4": "1"}).onnx_relpath()
+        == "quant/model-q4.onnx"
+    )
     with pytest.raises(ConfigError, match="SHINRAI_PRECISION"):
         load_settings({"SHINRAI_PRECISION": "fp16"})
 
@@ -60,3 +63,19 @@ def test_validation_errors():
         load_settings({"SHINRAI_THREADS": "many"})
     with pytest.raises(ConfigError):
         load_settings({"SHINRAI_MAX_CONCURRENT": "0"})
+
+
+def test_max_concurrent_above_one_refused():
+    # The shared tokenizer is not thread-safe under concurrent calls; the
+    # knob refuses loudly instead of accepting-and-crashing under load.
+    with pytest.raises(ConfigError, match="thread-safe"):
+        load_settings({"SHINRAI_MAX_CONCURRENT": "4"})
+
+
+def test_int4_requires_optin_at_config_time():
+    # Refusing here beats downloading 257 MB and then refusing (which on an
+    # emptyDir deployment crash-loops against Hugging Face).
+    with pytest.raises(ConfigError, match="SHINRAI_ALLOW_INT4"):
+        load_settings({"SHINRAI_PRECISION": "int4"})
+    settings = load_settings({"SHINRAI_PRECISION": "int4", "SHINRAI_ALLOW_INT4": "1"})
+    assert settings.allow_int4 and settings.precision == "int4"

@@ -1,0 +1,11 @@
+# Per-Dockerfile ignore (BuildKit): the ROOT .dockerignore excludes models/
+# and *.onnx to keep the main images lean — which is exactly what this bundle
+# build needs to COPY. This file replaces it for Dockerfile.bundle builds.
+.git
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+tests
+helm

@@ -8,6 +8,10 @@
 # The engine then starts with SHINRAI_MODELS=v1.1=/models/v1.1 (adjust names)
 # and needs no network. Mind the model license terms when distributing the
 # resulting image.
+#
+# Needs BuildKit (docker's default): the sibling Dockerfile.bundle.dockerignore
+# replaces the root .dockerignore, whose models/ exclusion would otherwise
+# empty this build's one COPY.
 
 ARG BASE_IMAGE=ghcr.io/innovius-ai/shinrai-engine:latest
 FROM ${BASE_IMAGE}
