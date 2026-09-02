@@ -1,0 +1,336 @@
+[
+  {
+    "text": "Ich wohne in Bad Neustadt und arbeite bei der Volksbank Raiffeisenbank in der Hauptstraße.",
+    "entities": [
+      {
+        "span": [
+          13,
+          25
+        ],
+        "text": "Bad Neustadt",
+        "type": "CITY",
+        "tier": "small",
+        "confidence": 0.999123,
+        "attrs": {
+          "origin": "DE"
+        }
+      },
+      {
+        "span": [
+          46,
+          70
+        ],
+        "text": "Volksbank Raiffeisenbank",
+        "type": "ORG",
+        "tier": "regional",
+        "confidence": 0.998975,
+        "attrs": {
+          "origin": "DE"
+        }
+      },
+      {
+        "span": [
+          78,
+          89
+        ],
+        "text": "Hauptstraße",
+        "type": "STREET",
+        "tier": "generic",
+        "confidence": 0.931231,
+        "attrs": {
+          "origin": "DE"
+        }
+      }
+    ]
+  },
+  {
+    "text": "Letzten Sommer besuchte Anna Kowalska ihre Tante in Mailand und schickte Robert eine Postkarte.",
+    "entities": [
+      {
+        "span": [
+          24,
+          37
+        ],
+        "text": "Anna Kowalska",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.996639,
+        "attrs": {
+          "origin": "DE",
+          "gender_expression": "fem",
+          "name_part": "full"
+        }
+      },
+      {
+        "span": [
+          52,
+          59
+        ],
+        "text": "Mailand",
+        "type": "CITY",
+        "tier": "major",
+        "confidence": 0.851734,
+        "attrs": {
+          "origin": "IT"
+        }
+      },
+      {
+        "span": [
+          73,
+          79
+        ],
+        "text": "Robert",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.999503,
+        "attrs": {
+          "origin": "DE",
+          "gender_expression": "masc",
+          "name_part": "given"
+        }
+      }
+    ]
+  },
+  {
+    "text": "Frau Dr. Weber überwies den Befund an das Universitätsklinikum Freiburg; ihr Kollege Herr Koch aus Nördlingen war einverstanden.",
+    "entities": [
+      {
+        "span": [
+          9,
+          14
+        ],
+        "text": "Weber",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.989595,
+        "attrs": {
+          "origin": "DE",
+          "gender_expression": "unknown",
+          "name_part": "family"
+        }
+      },
+      {
+        "span": [
+          42,
+          71
+        ],
+        "text": "Universitätsklinikum Freiburg",
+        "type": "ORG",
+        "tier": "regional",
+        "confidence": 0.684442,
+        "attrs": {
+          "origin": "DE"
+        }
+      },
+      {
+        "span": [
+          90,
+          94
+        ],
+        "text": "Koch",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.996487,
+        "attrs": {
+          "origin": "DE",
+          "gender_expression": "unknown",
+          "name_part": "family"
+        }
+      },
+      {
+        "span": [
+          99,
+          109
+        ],
+        "text": "Nördlingen",
+        "type": "CITY",
+        "tier": "small",
+        "confidence": 0.998998,
+        "attrs": {
+          "origin": "DE"
+        }
+      }
+    ]
+  },
+  {
+    "text": "Last week Robert flew from Munich to Lyon to meet Claire Dubois at Continental Systems.",
+    "entities": [
+      {
+        "span": [
+          10,
+          16
+        ],
+        "text": "Robert",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.998171,
+        "attrs": {
+          "origin": "US",
+          "gender_expression": "masc",
+          "name_part": "given"
+        }
+      },
+      {
+        "span": [
+          27,
+          33
+        ],
+        "text": "Munich",
+        "type": "CITY",
+        "tier": "major",
+        "confidence": 0.970289,
+        "attrs": {
+          "origin": "DE"
+        }
+      },
+      {
+        "span": [
+          37,
+          41
+        ],
+        "text": "Lyon",
+        "type": "CITY",
+        "tier": "small",
+        "confidence": 0.955977,
+        "attrs": {
+          "origin": "GB"
+        }
+      },
+      {
+        "span": [
+          50,
+          63
+        ],
+        "text": "Claire Dubois",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.99617,
+        "attrs": {
+          "origin": "FR",
+          "gender_expression": "fem",
+          "name_part": "full"
+        }
+      },
+      {
+        "span": [
+          67,
+          86
+        ],
+        "text": "Continental Systems",
+        "type": "ORG",
+        "tier": "national",
+        "confidence": 0.971984,
+        "attrs": {
+          "origin": "US"
+        }
+      }
+    ]
+  },
+  {
+    "text": "Paris Hilton never actually lived in Paris, but her assistant Priya Ramachandran once rented a flat on Baker Street.",
+    "entities": [
+      {
+        "span": [
+          0,
+          12
+        ],
+        "text": "Paris Hilton",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.780679,
+        "attrs": {
+          "origin": "US",
+          "gender_expression": "fem",
+          "name_part": "full"
+        }
+      },
+      {
+        "span": [
+          62,
+          80
+        ],
+        "text": "Priya Ramachandran",
+        "type": "PERSON",
+        "tier": "common",
+        "confidence": 0.979943,
+        "attrs": {
+          "origin": "US",
+          "gender_expression": "fem",
+          "name_part": "full"
+        }
+      },
+      {
+        "span": [
+          103,
+          115
+        ],
+        "text": "Baker Street",
+        "type": "STREET",
+        "tier": "specific",
+        "confidence": 0.895241,
+        "attrs": {
+          "origin": "GB"
+        }
+      }
+    ]
+  },
+  {
+    "text": "我住在秦皇岛，在华为工作，我的同事王伟上周去了慕尼黑出差。",
+    "entities": [
+      {
+        "span": [
+          3,
+          6
+        ],
+        "text": "秦皇岛",
+        "type": "CITY",
+        "tier": "small",
+        "confidence": 0.99699,
+        "attrs": {
+          "origin": "JP"
+        }
+      },
+      {
+        "span": [
+          8,
+          10
+        ],
+        "text": "华为",
+        "type": "ORG",
+        "tier": "international",
+        "confidence": 0.677885,
+        "attrs": {
+          "origin": "JP"
+        }
+      },
+      {
+        "span": [
+          17,
+          19
+        ],
+        "text": "王伟",
+        "type": "PERSON",
+        "tier": "rare",
+        "confidence": 0.978979,
+        "attrs": {
+          "origin": "JP",
+          "gender_expression": "masc",
+          "name_part": "given"
+        }
+      },
+      {
+        "span": [
+          23,
+          26
+        ],
+        "text": "慕尼黑",
+        "type": "CITY",
+        "tier": "major",
+        "confidence": 0.684394,
+        "attrs": {
+          "origin": "JP"
+        }
+      }
+    ]
+  }
+]

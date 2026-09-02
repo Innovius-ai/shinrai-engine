@@ -91,7 +91,20 @@ class NumpyOnnxPredictor:
         )
         self._output_names = [o.name for o in self.session.get_outputs()]
 
-    def predict(self, texts: list[str], *, batch_size: int = 16) -> list[list[dict]]:
+    def predict(self, texts: list[str], *, batch_size: int = 16,
+                segment: str | None = None) -> list[list[dict]]:
+        if segment is not None:
+            # sentence-sized pieces (2026-08-22 long-input finding); None is
+            # byte-identical to the sliding-window decode below
+            from shinrai_pii.segment import predict_auto, predict_segmented
+
+            if segment not in ("sentence", "auto"):
+                raise ValueError(f"segment must be 'sentence', 'auto' or None, got {segment!r}")
+            runner = predict_auto if segment == "auto" else predict_segmented
+            return runner(
+                lambda pieces, **kw: self.predict(pieces, **kw), texts, self._merge_windows,
+                batch_size=batch_size,
+            )
         per_text: list[list[dict]] = [[] for _ in texts]
         encoding = self.tokenizer(
             texts,

@@ -84,4 +84,43 @@ def spans_from_labels(
                     open_span["confs"].append(conf)
         close(open_span)
 
-    return sorted(entities, key=lambda e: (e["span"][0], e["span"][1]))
+    return _merge_geresh_splits(
+        sorted(entities, key=lambda e: (e["span"][0], e["span"][1])), text
+    )
+
+
+_GERESH = {"'", "\u05f3", "\u05f4", "\u2019"}  # ' ׳ ״ ’
+
+
+def _is_hebrew(ch: str) -> bool:
+    return "\u05d0" <= ch <= "\u05ea"
+
+
+def _merge_geresh_splits(entities: list[dict], text: str) -> list[dict]:
+    """Merge same-type spans split at an in-word geresh (he f1 stick,
+    2026-08-28): the model labels the geresh token O inside names like
+    גוג'ראנוואלה and the decoder emits fragments. Merge is he-scoped: the
+    gap must be empty or geresh-class only, the joined surface must stay
+    one word, and a flanking char must be a Hebrew letter."""
+    if not entities:
+        return entities
+    out = [entities[0]]
+    for e in entities[1:]:
+        a = out[-1]
+        if e["type"] == a["type"] and e["span"][0] >= a["span"][1]:
+            gap = text[a["span"][1] : e["span"][0]]
+            joined = text[a["span"][0] : e["span"][1]]
+            flanks_hebrew = (_is_hebrew(text[a["span"][1] - 1]) or _is_hebrew(text[e["span"][0]])) if joined else False
+            if (
+                all(c in _GERESH for c in gap)
+                and (_GERESH & set(joined))
+                and flanks_hebrew
+                and not any(c.isspace() for c in joined)
+            ):
+                confs = [a["confidence"], e["confidence"]]
+                a["span"] = [a["span"][0], e["span"][1]]
+                a["text"] = joined
+                a["confidence"] = round(sum(confs) / len(confs), 6)
+                continue
+        out.append(e)
+    return out

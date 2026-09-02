@@ -173,8 +173,13 @@ line.
 
 Two honest caveats: int8 graphs have no CUDA kernels for their quantized ops
 and mostly run on CPU regardless of provider (GPU serving is effectively
-fp32-only), and we publish no GPU latency numbers yet because we have not
-measured any.
+fp32-only), and the CUDA path has a per-call floor of ≈5 ms with the current
+export (dynamic-shape ops run on the host and add one device copy per layer):
+a 2016 Tesla P40 answers a 62-token message in ≈9 ms, a 317-token paragraph in
+≈25 ms and saturates near 15k tokens/s at batch 8 (measured 2026-09-02 through
+the production service, `segment: none`). The default long-input decode
+(`segment: auto`) adds a sentence-piece pass on texts over 1200 characters and
+roughly triples paragraph latency.
 
 ## Kubernetes / Helm / microk8s
 
@@ -215,21 +220,33 @@ set the service's `bert_detection.mode: remote` with `remote.url:
 http://<engine-service>:8080`. Note the service sends no auth header today —
 leave engine auth off on that path and keep both cluster-internal.
 
-## Performance (measured, CPU)
+## Performance (measured)
 
-Single-request latency (concurrency 1), v1.1, Apple M-series dev machine,
-`intra_op_threads: 2` — measurement conditions in the model repo's serving
-bench:
+Single-request p50 latency (concurrency 1), v1.3, fp32 ONNX, ONNX Runtime 1.28
+CPU / 1.26 CUDA, measured 2026-09-02 with `scripts/hardware/bench-local.py`
+(S = 62-token message, P = 317-token paragraph, L = 1136-token letter = two
+windows, W = one 1024-token window, D ≈ 10k tokens = 12 windows):
 
-| payload | fp32 p50 | int8 p50 |
-|---|---|---|
-| ~200 chars | 26 ms | 22 ms |
-| ~400 tokens | 101 ms | 102 ms |
-| ~1–2k tokens | 588 ms | 537 ms |
+| Platform | threads | S | P | L | W | D |
+|---|---|---|---|---|---|---|
+| Apple M4 Pro (Mac mini 2024, SME kernels) | 10 | 13 ms | 56 ms | 489 ms | 233 ms | 3.1 s |
+| Apple M4 Pro, 2 threads | 2 | 18 ms | 77 ms | 681 ms | 317 ms | 4.4 s |
+| x86 server VM, 4 vCPU (AMD EPYC 7002, AVX2) | 4 | 83 ms | 350 ms | 2.6 s | 1.2 s | 15.5 s |
+| x86 server VM, 8 vCPU | 8 | 59 ms | 237 ms | 1.6 s | 845 ms | 8.5 s |
+| x86 server VM, 16 vCPU (SMT threads) | 16 | 76 ms | 215 ms | 1.8 s | 668 ms | 7.2 s |
+| Tesla P40 (2016) via the serve API, `segment: none` | – | 9 ms | 25 ms | 175 ms | 93 ms | 1.6 s |
 
-fp32 over int8 costs 0–18% latency on this CPU class. Memory: ~1.5 GiB RSS
-per loaded fp32 model — the fp32 default costs RAM, not speed. Server-class
-Xeon numbers and GPU numbers are not yet published (not measured).
+Memory: ≈2.1 GB resident per loaded fp32 session, ≈3.3 GB peak while a 10k-token
+document is in flight — plan 4 GB per session, 8 GB comfortable. Q8/Q4 builds are
+latency-only until they clear the quality gates; on Apple silicon with SME kernels
+fp32 is already the faster path.
+
+Estimates for other hardware (Raspberry Pi 4/5 ≈ 4 s / 1 s per paragraph, Jetson,
+laptops, T4/L4/A100/H100, DGX Spark) and the method behind them: the hardware map
+on the benchmark board, https://huggingface.co/spaces/innovius/shinrai-pii-benchmarks.
+Measure your own machine with `scripts/hardware/bench-local.py` (see
+`scripts/hardware/README.md`); the GitHub workflow `hardware-bench.yml` runs it on
+the free hosted runners (x64, Arm, macOS M1).
 
 ## Development
 

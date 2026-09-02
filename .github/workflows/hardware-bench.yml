@@ -1,0 +1,99 @@
+# Hardware-map benchmark on GitHub-hosted runners (free on public repos).
+#
+# Measures the ShinrAI PII model with the vendored torch-free runtime on three
+# runner classes and uploads one JSONL per runner. The model repo is gated, so
+# the workflow needs a READ token in the repository secret HF_TOKEN.
+#
+#   Settings → Secrets and variables → Actions → New repository secret
+#   Name: HF_TOKEN   Value: a Hugging Face token of type "Read"
+#
+# Trigger by hand (Actions tab → hardware-bench → Run workflow) or:
+#   gh workflow run hardware-bench.yml -f threads=all,2
+name: hardware-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_repo:
+        description: Hugging Face model repo
+        default: innovius/shinrai-pii-m-v1.3
+      onnx_file:
+        description: ONNX file inside quant/ (fp32 today; q8/q4 once published)
+        default: model-fp32.onnx
+      threads:
+        description: comma list of intra-op thread counts ("all" = ORT default)
+        default: all,2,1
+      payloads:
+        description: payload classes S,P,L,W,D,XL
+        default: S,P,L,W
+      max_seconds:
+        description: time cap per cell after warm-up
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: ${{ matrix.platform_id }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform_id: gh-ubuntu-x64-4vcpu
+          - runner: ubuntu-24.04-arm
+            platform_id: gh-ubuntu-arm64-4vcpu
+          - runner: macos-latest
+            platform_id: gh-macos-arm64-3core
+    env:
+      MODEL_REPO: ${{ inputs.model_repo || 'innovius/shinrai-pii-m-v1.3' }}
+      ONNX_FILE: ${{ inputs.onnx_file || 'model-fp32.onnx' }}
+      THREADS: ${{ inputs.threads || 'all,2,1' }}
+      PAYLOADS: ${{ inputs.payloads || 'S,P,L,W' }}
+      MAX_SECONDS: ${{ inputs.max_seconds || '30' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the torch-free runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "onnxruntime==1.28.0" "transformers==4.57.6" "numpy" "psutil" "pyyaml" "huggingface_hub[cli]>=0.34"
+
+      - name: Download the model bundle (gated repo, read token)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is missing — add a Hugging Face READ token under Settings → Secrets → Actions"
+            exit 1
+          fi
+          hf download "$MODEL_REPO" \
+            --include "quant/$ONNX_FILE" "quant/MANIFEST.json" "tokenizer/*" "config.json" "labels-*.yaml" "calibration.json" \
+            --local-dir model
+          ls -la model model/quant
+
+      - name: Fingerprint
+        run: python scripts/hardware/fingerprint.py --platform-id "${{ matrix.platform_id }}"
+
+      - name: Benchmark
+        run: |
+          python scripts/hardware/bench-local.py \
+            --platform-id "${{ matrix.platform_id }}" \
+            --note "GitHub-hosted runner ${{ matrix.runner }}, shared cloud VM" \
+            --model-dir model --onnx "model/quant/$ONNX_FILE" \
+            --threads "$THREADS" --mode both --payloads "$PAYLOADS" \
+            --max-seconds "$MAX_SECONDS" --iters 400 --skip-sha \
+            --out "bench-${{ matrix.platform_id }}.jsonl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.platform_id }}
+          path: bench-*.jsonl
+          retention-days: 90
