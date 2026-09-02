@@ -11,7 +11,7 @@ mode "http"). The client fingerprint is embedded; describe the server with
 --server-platform-id / --server-note (e.g. "tesla-p40", "1x P40 24 GB, CUDA EP").
 
   python scripts/hardware/bench-http.py \
-      --target http://shinrai-pii-serve-main-shinrai-pii-serve.llm.svc.cluster.local:8080 \
+      --target http://localhost:8080 \
       --model v1.3 --platform-id tesla-p40 --concurrency 1,4,16 --out results.jsonl
 
 Dependencies: httpx (present in the serve image), stdlib otherwise.
