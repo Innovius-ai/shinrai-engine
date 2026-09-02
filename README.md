@@ -225,7 +225,8 @@ leave engine auth off on that path and keep both cluster-internal.
 Single-request p50 latency (concurrency 1), v1.3, fp32 ONNX, ONNX Runtime 1.28
 CPU / 1.26 CUDA, measured 2026-09-02 with `scripts/hardware/bench-local.py`
 (S = 62-token message, P = 317-token paragraph, L = 1136-token letter = two
-windows, W = one 1024-token window, D ≈ 10k tokens = 12 windows):
+windows, W = one 1024-token window, D ≈ 10k tokens = 12 windows; the three
+runner rows come from `hardware-bench.yml`, run 2026-09-02):
 
 | Platform | threads | S | P | L | W | D |
 |---|---|---|---|---|---|---|
@@ -234,6 +235,9 @@ windows, W = one 1024-token window, D ≈ 10k tokens = 12 windows):
 | x86 server VM, 4 vCPU (AMD EPYC 7002, AVX2) | 4 | 83 ms | 350 ms | 2.6 s | 1.2 s | 15.5 s |
 | x86 server VM, 8 vCPU | 8 | 59 ms | 237 ms | 1.6 s | 845 ms | 8.5 s |
 | x86 server VM, 16 vCPU (SMT threads) | 16 | 76 ms | 215 ms | 1.8 s | 668 ms | 7.2 s |
+| Cloud VM, 4 vCPU x86 (AMD EPYC 9V74, shared; GitHub-hosted runner) | 4 | 105 ms | 514 ms | 4.1 s | 1.9 s | – |
+| Cloud VM, 4 vCPU Arm (Neoverse N2; GitHub-hosted runner) | 4 | 92 ms | 442 ms | 3.5 s | 1.7 s | – |
+| Apple M1, 3 virtual cores (GitHub-hosted macOS runner) | 2 | 97 ms | 509 ms | 4.3 s | 2.0 s | – |
 | Tesla P40 (2016) via the serve API, `segment: none` | – | 9 ms | 25 ms | 175 ms | 93 ms | 1.6 s |
 
 Memory: ≈2.1 GB resident per loaded fp32 session, ≈3.3 GB peak while a 10k-token
