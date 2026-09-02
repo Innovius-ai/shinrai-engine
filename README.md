@@ -237,7 +237,9 @@ windows, W = one 1024-token window, D ≈ 10k tokens = 12 windows):
 | Tesla P40 (2016) via the serve API, `segment: none` | – | 9 ms | 25 ms | 175 ms | 93 ms | 1.6 s |
 
 Memory: ≈2.1 GB resident per loaded fp32 session, ≈3.3 GB peak while a 10k-token
-document is in flight — plan 4 GB per session, 8 GB comfortable. Q8/Q4 builds are
+document is in flight — plan 4 GB per session, 8 GB comfortable. The same graph saved in
+ONNX external-data format (`onnx.save_model(..., save_as_external_data=True)`) holds
+≈0.9 GB resident at identical latency; use that on 4 GB devices. Q8/Q4 builds are
 latency-only until they clear the quality gates; on Apple silicon with SME kernels
 fp32 is already the faster path.
 
