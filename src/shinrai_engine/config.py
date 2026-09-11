@@ -66,6 +66,8 @@ class Settings:
     port: int = 8080
     self_test: str = "warn"  # off | warn | strict
     release_channel: str = "public"
+    lazy_models: frozenset[str] = frozenset()
+    model_idle_ttl_seconds: int = 14_400
 
     @property
     def default_model(self) -> str:
@@ -153,8 +155,24 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             "replicas instead."
         )
 
+    models = parse_model_specs(env.get("SHINRAI_MODELS", DEFAULT_MODELS))
+    model_names = {name for name, _ in models}
+    lazy_models = frozenset(
+        name.strip()
+        for name in env.get("SHINRAI_LAZY_MODELS", "").split(",")
+        if name.strip()
+    )
+    unknown_lazy = lazy_models - model_names
+    if unknown_lazy:
+        raise ConfigError(
+            f"SHINRAI_LAZY_MODELS names are not present in SHINRAI_MODELS: "
+            f"{sorted(unknown_lazy)}"
+        )
+    if models[0][0] in lazy_models:
+        raise ConfigError("the default (first) SHINRAI_MODELS entry cannot be lazy")
+
     return Settings(
-        models=parse_model_specs(env.get("SHINRAI_MODELS", DEFAULT_MODELS)),
+        models=models,
         model_cache=Path(env.get("SHINRAI_MODEL_CACHE", "/models")),
         precision=precision,
         onnx_file=env.get("SHINRAI_ONNX_FILE", "").strip() or None,
@@ -169,4 +187,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         port=_int(env, "SHINRAI_PORT", 8080, minimum=1),
         self_test=self_test,
         release_channel=env.get("SHINRAI_RELEASE_CHANNEL", "public").strip() or "public",
+        lazy_models=lazy_models,
+        model_idle_ttl_seconds=_int(
+            env, "SHINRAI_MODEL_IDLE_TTL_SECONDS", 14_400, minimum=1
+        ),
     )

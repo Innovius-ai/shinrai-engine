@@ -28,6 +28,22 @@ def test_parse_model_specs():
         parse_model_specs("a=/x,a=/y")
 
 
+def test_lazy_models_are_validated():
+    settings = load_settings(
+        {
+            "SHINRAI_MODELS": "current=/current,old=/old",
+            "SHINRAI_LAZY_MODELS": "old",
+            "SHINRAI_MODEL_IDLE_TTL_SECONDS": "3600",
+        }
+    )
+    assert settings.lazy_models == frozenset({"old"})
+    assert settings.model_idle_ttl_seconds == 3600
+    with pytest.raises(ConfigError, match="cannot be lazy"):
+        load_settings({"SHINRAI_MODELS": "current=/current", "SHINRAI_LAZY_MODELS": "current"})
+    with pytest.raises(ConfigError, match="not present"):
+        load_settings({"SHINRAI_MODELS": "current=/current", "SHINRAI_LAZY_MODELS": "old"})
+
+
 def test_precision_selects_file():
     assert load_settings({"SHINRAI_PRECISION": "q8"}).onnx_relpath() == "quant/model-q8.onnx"
     assert (

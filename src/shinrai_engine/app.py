@@ -24,8 +24,11 @@ timing_ms, version, release_channel}.
 from __future__ import annotations
 
 import asyncio
+import gc
 import hmac
 import time
+from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -36,7 +39,8 @@ from shinrai_pii_runtime import scrub_invisibles, to_legacy_entities
 from . import __version__
 from .config import Settings
 from .metrics import ServeMetrics
-from .registry import LoadedModel
+from .registry import LoadedModel, load_model
+from .selftest import run_all
 
 GITHUB_URL = "https://github.com/Innovius-ai/shinrai-engine"
 
@@ -50,18 +54,93 @@ class AnalyzeRequest(BaseModel):
     text: str | None = None
     texts: list[str] | None = None
     model: str | None = None
-    threshold: float = 0.7
+    threshold: float | None = None
     merge_persons: bool = True
+    segment: Literal["auto", "sentence", "none", "whole"] | None = "auto"
 
 
 def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
-    app = FastAPI(title="shinrai-engine", docs_url=None, redoc_url=None)
     metrics = ServeMetrics()
     inference_gate = asyncio.Semaphore(settings.max_concurrent)
-
     default_name = settings.default_model
-    device = "cuda" if any(m.cuda_active for m in registry.values()) else "cpu"
-    default_model = registry[default_name]
+    configured = dict(settings.models)
+    last_used: dict[str, float] = {}
+    activation_locks = {name: asyncio.Lock() for name in configured}
+
+    async def activate_model(name: str) -> LoadedModel:
+        """Return a ready model, loading an on-demand version exactly once."""
+        async with activation_locks[name]:
+            model = registry.get(name)
+            if model is None:
+                source = configured.get(name)
+                if source is None:
+                    raise KeyError(name)
+                started = time.time()
+                model = await asyncio.to_thread(load_model, name, source, settings)
+                await asyncio.to_thread(run_all, {name: model}, settings.self_test)
+                registry[name] = model
+                print(
+                    f"[engine] activated {name} [{model.precision}] via "
+                    f"{model.providers[0]} in {time.time() - started:.1f}s"
+                )
+            if name in settings.lazy_models:
+                last_used[name] = time.monotonic()
+            return model
+
+    async def unload_idle_models() -> None:
+        interval = min(60.0, max(1.0, settings.model_idle_ttl_seconds / 4))
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            expired = [
+                name
+                for name, used in last_used.items()
+                if name in registry
+                and now - used >= settings.model_idle_ttl_seconds
+            ]
+            for name in expired:
+                async with inference_gate, activation_locks[name]:
+                    used = last_used.get(name, now)
+                    if (
+                        name not in registry
+                        or time.monotonic() - used < settings.model_idle_ttl_seconds
+                    ):
+                        continue
+                    registry.pop(name, None)
+                    last_used.pop(name, None)
+                    gc.collect()
+                    print(
+                        f"[engine] unloaded idle on-demand model {name} "
+                        f"after {settings.model_idle_ttl_seconds}s"
+                    )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        sweeper = asyncio.create_task(unload_idle_models())
+        try:
+            yield
+        finally:
+            sweeper.cancel()
+            await asyncio.gather(sweeper, return_exceptions=True)
+
+    app = FastAPI(
+        title="shinrai-engine", docs_url=None, redoc_url=None, lifespan=lifespan
+    )
+
+    def device() -> str:
+        return "cuda" if any(m.cuda_active for m in registry.values()) else "cpu"
+
+    def model_rows() -> list[dict]:
+        return [
+            _model_info(
+                registry.get(name),
+                name,
+                default_name,
+                on_demand=name in settings.lazy_models,
+                idle_ttl_seconds=settings.model_idle_ttl_seconds,
+            )
+            for name in configured
+        ]
 
     async def require_auth(request: Request) -> None:
         if settings.api_key is None:
@@ -84,9 +163,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
         return {
             "service": "shinrai-engine",
             "version": __version__,
-            "models": [
-                _model_info(m, default_name) for m in registry.values()
-            ],
+            "models": model_rows(),
             "auth": "bearer" if settings.api_key else "disabled",
             "endpoints": {
                 "health": "/healthz",
@@ -100,12 +177,12 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
     @app.get("/health")
     @app.get("/healthz")
     def health() -> dict:
-        # The registry is fully mounted (and warmed up) before uvicorn starts
-        # listening; a 200 therefore means every model answers /api/analyze.
+        default_model = registry[default_name]
         return {
             "status": "ok",
-            "models": sorted(registry),
-            "device": device,
+            "models": sorted(configured),
+            "loaded_models": sorted(registry),
+            "device": device(),
             # Back-compat flat fields describe the DEFAULT model; the
             # per-model truth (multi-model deployments, silent CUDA
             # fallback on a second graph) lives in models_detail.
@@ -113,33 +190,50 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
             "precision_warning": default_model.precision_warning,
             "providers": default_model.providers,
             "self_test": default_model.self_test,
-            "models_detail": [
-                {
-                    "name": m.name,
-                    "precision": m.precision,
-                    "precision_warning": m.precision_warning,
-                    "providers": m.providers,
-                    "self_test": m.self_test,
-                }
-                for m in registry.values()
-            ],
+            "models_detail": model_rows(),
         }
 
     @app.get("/metrics", dependencies=auth_dep)
     def metrics_endpoint() -> dict:
+        default_model = registry[default_name]
         return {
             "service": "shinrai-engine",
             "version": __version__,
             "release_channel": settings.release_channel,
-            "device": device,
-            "models": sorted(registry),
+            "device": device(),
+            "models": sorted(configured),
+            "loaded_models": sorted(registry),
             "precision": default_model.precision,
             **metrics.snapshot(),
         }
 
     @app.get("/api/models", dependencies=auth_dep)
     def api_models() -> list[dict]:
-        return [_model_info(m, default_name) for m in registry.values()]
+        return model_rows()
+
+    @app.post("/api/models/{model_name}/activate", dependencies=auth_dep)
+    async def api_activate_model(model_name: str):
+        if model_name not in configured:
+            return JSONResponse(
+                {"error": f"unknown model {model_name!r}", "models": sorted(configured)},
+                status_code=404,
+            )
+        async with inference_gate:
+            try:
+                model = await activate_model(model_name)
+            except Exception as exc:
+                print(f"[engine] activation failed for {model_name}: {type(exc).__name__}")
+                return JSONResponse(
+                    {"error": "model activation failed", "model": model_name},
+                    status_code=503,
+                )
+        return _model_info(
+            model,
+            model_name,
+            default_name,
+            on_demand=model_name in settings.lazy_models,
+            idle_ttl_seconds=settings.model_idle_ttl_seconds,
+        )
 
     @app.post("/api/analyze", dependencies=auth_dep)
     async def api_analyze(request: AnalyzeRequest):
@@ -165,10 +259,9 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                     status_code=413,
                 )
             model_name = request.model or default_name
-            model = registry.get(model_name)
-            if model is None:
+            if model_name not in configured:
                 return JSONResponse(
-                    {"error": f"unknown model {model_name!r}", "models": sorted(registry)},
+                    {"error": f"unknown model {model_name!r}", "models": sorted(configured)},
                     status_code=400,
                 )
 
@@ -180,17 +273,27 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
             # caller's original text.
             texts = [scrub_invisibles(t) for t in texts]
 
-            predictor = model.predictor
             inference_started = time.time()
             async with inference_gate:
+                try:
+                    model = await activate_model(model_name)
+                except Exception as exc:
+                    print(f"[engine] activation failed for {model_name}: {type(exc).__name__}")
+                    return JSONResponse(
+                        {"error": "model activation failed", "model": model_name},
+                        status_code=503,
+                    )
+                predictor = model.predictor
                 # EVERYTHING that touches the tokenizer runs in this one
                 # gated thread: the HF fast tokenizer is not safe under
                 # concurrent calls (Rust core: 'Already borrowed'), and any
                 # tokenizer work left on the event loop stalls /healthz for
                 # the length of a long document.
                 per_text, stats = await asyncio.to_thread(
-                    _predict_with_stats, predictor, texts
+                    _predict_with_stats, predictor, texts, request.segment
                 )
+                if model_name in settings.lazy_models:
+                    last_used[model_name] = time.monotonic()
             inference_ms = round((time.time() - inference_started) * 1000, 1)
 
             results = []
@@ -198,7 +301,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                 legacy = to_legacy_entities(
                     entities,
                     predictor.label_space,
-                    threshold=request.threshold,
+                    threshold=_resolve_threshold(request.threshold, predictor),
                     text=text,
                     merge_persons=request.merge_persons,
                 )
@@ -222,7 +325,9 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
     return app
 
 
-def _predict_with_stats(predictor, texts: list[str]) -> tuple[list, list[dict]]:
+def _predict_with_stats(
+    predictor, texts: list[str], segment: str | None = "auto"
+) -> tuple[list, list[dict]]:
     """Inference plus per-text stats, in ONE worker thread.
 
     Runs under the inference gate on purpose — every tokenizer touch must be
@@ -231,7 +336,10 @@ def _predict_with_stats(predictor, texts: list[str]) -> tuple[list, list[dict]]:
     advance per extra window is `window - 2 - stride`, not `window - stride` —
     the naive formula under-reported one window per ~220 on long documents.
     """
-    per_text = predictor.predict(texts)
+    if segment not in (None, "auto", "sentence", "none", "whole"):
+        raise ValueError("segment must be auto, sentence, none, whole or null")
+    decode_segment = None if segment in (None, "none", "whole") else segment
+    per_text = predictor.predict(texts, segment=decode_segment)
     window, stride = predictor.window, predictor.stride
     content, step = window - 2, window - 2 - stride
     stats = []
@@ -243,12 +351,47 @@ def _predict_with_stats(predictor, texts: list[str]) -> tuple[list, list[dict]]:
     return per_text, stats
 
 
-def _model_info(model: LoadedModel, default_name: str) -> dict:
+def _resolve_threshold(requested: float | None, predictor) -> float:
+    if requested is not None:
+        return float(requested)
+    decoder = (getattr(predictor, "meta", None) or {}).get("decoder")
+    if isinstance(decoder, dict) and isinstance(decoder.get("serve_threshold"), (int, float)):
+        return float(decoder["serve_threshold"])
+    return 0.7
+
+
+def _model_info(
+    model: LoadedModel | None,
+    name: str,
+    default_name: str,
+    *,
+    on_demand: bool = False,
+    idle_ttl_seconds: int = 14_400,
+) -> dict:
+    if model is None:
+        return {
+            "name": name,
+            "default": name == default_name,
+            "state": "cold",
+            "on_demand": on_demand,
+            "idle_ttl_seconds": idle_ttl_seconds if on_demand else None,
+            "window": None,
+            "languages_hint": None,
+            "precision": None,
+            "precision_warning": None,
+            "providers": [],
+            "self_test": "not_run",
+        }
     return {
-        "name": model.name,
-        "default": model.name == default_name,
+        "name": name,
+        "default": name == default_name,
+        "state": "loaded",
+        "on_demand": on_demand,
+        "idle_ttl_seconds": idle_ttl_seconds if on_demand else None,
         "window": model.predictor.window,
         "languages_hint": None,  # routing lives client-side
         "precision": model.precision,
         "precision_warning": model.precision_warning,
+        "providers": model.providers,
+        "self_test": model.self_test,
     }

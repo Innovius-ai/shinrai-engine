@@ -62,6 +62,8 @@ def merge_person_spans(entities: list[dict], text: str | None = None) -> list[di
             cur["confidence"] = min(
                 float(cur.get("confidence", 1.0)), float(nxt.get("confidence", 1.0))
             )
+            if nxt.get("evidence") == "floor":
+                cur["evidence"] = "floor"
             i += 1
         merged.append(cur)
         i += 1
@@ -100,6 +102,10 @@ def to_legacy_entities(
             "source": "bert",
             "confidence": round(confidence, 4),
             "region": ORIGIN_TO_REGION.get(attrs.get("origin", ""), "GLOBAL"),
+            # status-41 §6 (2026-09-06): the decoder's evidence — "argmax" (model decision) or
+            # "floor" (recall-floor rescue; confidence = entity mass) — so a consumer can apply
+            # its own policy to rescued spans. Additive key.
+            "evidence": ent.get("evidence", "argmax"),
         }
         if ent["type"] == "CITY":
             item["size"] = CITY_TIER_TO_SIZE.get(ent.get("tier", ""), "medium")

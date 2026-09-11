@@ -119,8 +119,10 @@ Everything is an env var:
 | `SHINRAI_API_KEY` / `SHINRAI_API_KEY_FILE` | – | Enables bearer auth on `/api/*` and `/metrics`. |
 | `SHINRAI_MAX_TEXT_CHARS` / `SHINRAI_MAX_TEXTS` | `200000` / `64` | Request limits (413 beyond). |
 | `SHINRAI_HOST` / `SHINRAI_PORT` | `0.0.0.0` / `8080` | Bind address. |
-| `SHINRAI_SELF_TEST` | `warn` | `off` \| `warn` \| `strict` — golden self-test at startup; verdict on `/healthz`. |
+| `SHINRAI_SELF_TEST` | `warn` | `off` \| `warn` \| `strict` — golden self-test at startup and first activation; verdict on `/healthz`. |
 | `SHINRAI_RELEASE_CHANNEL` | `public` | Echoed in `/api/analyze` and `/metrics` responses. |
+| `SHINRAI_LAZY_MODELS` | – | Comma-separated retained model names to load on demand. The first/default model cannot be lazy. |
+| `SHINRAI_MODEL_IDLE_TTL_SECONDS` | `14400` | Unload an activated lazy model after this many idle seconds (four hours by default). |
 | `HF_TOKEN` / `HF_HUB_OFFLINE` | – | Private repos / air-gapped operation. |
 
 ## API
@@ -142,7 +144,8 @@ consumers must convert — a `ü` is one code point but two UTF-8 bytes.
 ```json
 {"text": "...",            // or "texts": ["...", "..."] (max 64)
  "model": "v1.1",          // optional; default = first configured model
- "threshold": 0.7,          // confidence gate (calibrated)
+ "threshold": null,         // optional; checkpoint serve threshold, else legacy 0.7
+ "segment": "auto",         // sentence-union decode for long inputs
  "merge_persons": true}     // join adjacent given+family name spans
 ```
 

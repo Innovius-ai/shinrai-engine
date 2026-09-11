@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.4 — 2026-09-11
+
+- Added retained-model lifecycle controls: entries named in
+  `SHINRAI_LAZY_MODELS` load on first activation and unload after
+  `SHINRAI_MODEL_IDLE_TTL_SECONDS` of inactivity (four hours by default).
+- Added authenticated, idempotent `POST /api/models/{name}/activate` and
+  model state metadata on health/model endpoints.
+- Default detection thresholds can now come from the sealed bundle's decoder
+  stamp; callers can still provide an explicit threshold.
+- Added sentence-aware segmentation support required by the v1.4 decoder and
+  refreshed the vendored, model-independent inference runtime.
+
 ## 0.1.3 — 2026-08-13
 
 - License files name the full legal entity: Innovius UG (haftungsbeschränkt).

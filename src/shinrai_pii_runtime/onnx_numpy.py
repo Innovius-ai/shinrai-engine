@@ -22,7 +22,12 @@ from pathlib import Path
 
 import numpy as np
 
-from .decode import spans_from_labels
+from .decode import (
+    default_proclitic_completion,
+    default_recall_floor,
+    normalise_proclitic_completion,
+    spans_from_labels,
+)
 from .labels import load_label_space
 
 # Literal copies of training.model.SHINRAI_CONFIG_KEY and
@@ -30,6 +35,30 @@ from .labels import load_label_space
 # torch into the runtime.
 SHINRAI_CONFIG_KEY = "shinrai"
 ATTR_OUTPUT_PREFIX = "attr_logits_"
+
+
+def decode_with_floor(
+    probs: np.ndarray, recall_floor: float | None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-token label ids, confidences and a rescued mask; numpy port of the torch
+    recall-mode decode (training.predictor, 2026-08-19 / docs/39 D8). ``None`` = plain argmax.
+    With a floor, an argmax-O token whose total entity mass (1 − P(O)) reaches the floor emits
+    its best NON-O label. BIO row 0 is O.
+
+    Confidence contract (status-41 audit §6, 2026-09-06): a rescued token's confidence is its
+    ENTITY MASS (1 − P(O)) — the quantity the floor decision was made on, >= recall_floor by
+    construction — not the best entity label's probability. The third array marks rescued
+    tokens so the span decoder can report ``evidence: floor``. Argmax tokens are unchanged."""
+    ids = probs.argmax(axis=-1)
+    conf = probs.max(axis=-1)
+    if recall_floor is None:
+        return ids, conf, np.zeros(ids.shape, dtype=bool)
+    non_o = probs.copy()
+    non_o[..., 0] = 0.0
+    alt_ids = non_o.argmax(axis=-1)
+    mass = 1.0 - probs[..., 0]
+    flip = (ids == 0) & (mass >= recall_floor)
+    return np.where(flip, alt_ids, ids), np.where(flip, mass, conf), flip
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:
@@ -50,6 +79,7 @@ class NumpyOnnxPredictor:
         providers: list[str] | None = None,
         window: int | None = None,
         intra_op_threads: int | None = None,
+        proclitic_completion: str | None = None,
     ):
         import onnxruntime as ort
         from transformers import AutoTokenizer
@@ -72,6 +102,17 @@ class NumpyOnnxPredictor:
             checkpoint_dir / meta.get("labels_file", "labels-v2.0.yaml")
         )
         self.meta = meta
+        # docs/39 D8: the checkpoint's decoder threshold (or the SHINRAI_RECALL_FLOOR
+        # override); None = plain argmax. Same precedence as training.predictor.
+        self.default_recall_floor = default_recall_floor(meta)
+        # DIAGNOSIS L12 (2026-09-07): he proclitic span completion. Same precedence as the
+        # torch Predictor — argument > SHINRAI_PROCLITIC_COMPLETION > checkpoint decoder
+        # block > None (off). Off = byte-identical decode.
+        self.proclitic_completion = (
+            normalise_proclitic_completion(proclitic_completion)
+            if proclitic_completion is not None
+            else default_proclitic_completion(meta)
+        )
         self.heads = list(meta["heads"])
         self.window = int(window or meta.get("max_length") or 512)
         self.stride = max(32, self.window // 8)
@@ -86,24 +127,41 @@ class NumpyOnnxPredictor:
         if intra_op_threads:
             options.intra_op_num_threads = int(intra_op_threads)
         self.session = ort.InferenceSession(
-            str(onnx_path), sess_options=options,
+            str(onnx_path),
+            sess_options=options,
             providers=providers or ["CPUExecutionProvider"],
         )
         self._output_names = [o.name for o in self.session.get_outputs()]
 
-    def predict(self, texts: list[str], *, batch_size: int = 16,
-                segment: str | None = None) -> list[list[dict]]:
+    def predict(
+        self,
+        texts: list[str],
+        *,
+        batch_size: int = 16,
+        recall_floor: float | None = None,
+        segment: str | None = None,
+        proclitic_completion: str | None = None,
+    ) -> list[list[dict]]:
+        if recall_floor is None:
+            recall_floor = getattr(self, "default_recall_floor", None)
+        if proclitic_completion is None:
+            proclitic_completion = getattr(self, "proclitic_completion", None)
+        proclitic_completion = normalise_proclitic_completion(proclitic_completion)
         if segment is not None:
             # sentence-sized pieces (2026-08-22 long-input finding); None is
             # byte-identical to the sliding-window decode below
-            from shinrai_pii.segment import predict_auto, predict_segmented
+            from .segment import predict_auto, predict_segmented
 
             if segment not in ("sentence", "auto"):
                 raise ValueError(f"segment must be 'sentence', 'auto' or None, got {segment!r}")
             runner = predict_auto if segment == "auto" else predict_segmented
             return runner(
-                lambda pieces, **kw: self.predict(pieces, **kw), texts, self._merge_windows,
+                lambda pieces, **kw: self.predict(pieces, **kw),
+                texts,
+                self._merge_windows,
                 batch_size=batch_size,
+                recall_floor=recall_floor,
+                proclitic_completion=proclitic_completion,
             )
         per_text: list[list[dict]] = [[] for _ in texts]
         encoding = self.tokenizer(
@@ -137,15 +195,24 @@ class NumpyOnnxPredictor:
                 text = texts[sample_map[window_i]]
                 label_ids: dict[str, list[int]] = {}
                 confidences: dict[str, list[float]] = {}
+                rescued: dict[str, list[bool]] = {}
                 for head in self.heads:
                     logits = named[f"logits_{head.lower()}"][local_i]
                     temp = float(self.temperatures.get(head, 1.0)) or 1.0
                     probs = _softmax(logits / temp)
-                    label_ids[head] = probs.argmax(axis=-1).tolist()
-                    confidences[head] = probs.max(axis=-1).tolist()
+                    ids, conf, flip = decode_with_floor(probs, recall_floor)
+                    label_ids[head] = ids.tolist()
+                    confidences[head] = conf.tolist()
+                    rescued[head] = flip.tolist()
                 token_offsets = [tuple(o) for o in offsets[window_i].tolist()]
                 entities = spans_from_labels(
-                    label_ids, token_offsets, self.label_space, text, confidences
+                    label_ids,
+                    token_offsets,
+                    self.label_space,
+                    text,
+                    confidences,
+                    evidence_by_head=rescued,
+                    proclitic_completion=proclitic_completion,
                 )
                 entities = self._attach_attrs(named, local_i, token_offsets, entities)
                 per_text[sample_map[window_i]].extend(entities)

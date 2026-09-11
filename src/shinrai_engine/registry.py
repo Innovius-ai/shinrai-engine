@@ -1,11 +1,11 @@
 """Model registry: acquire bundles, pick execution providers, load ONNX
 sessions, warm up, and attach the precision verdict + warning to each model.
 
-Everything is EAGER: build_registry returns only when every model answered a
-warmup predict whose offsets slice back to the input text — the same "a 200 on
-/healthz means the whole registry serves" guarantee the internal service
-gives, plus a tokenizer-skew tripwire (offsets are the wire contract;
-transformers is pinned exactly for this reason)."""
+Configured models are eager by default. Operators can mark retained versions
+lazy; those bundles are acquired and mounted on first activation, then the HTTP
+layer releases their ONNX session after the configured idle window. The default
+model is always eager. Every load still performs the same offset-validating
+warmup before it becomes visible to callers."""
 
 from __future__ import annotations
 
@@ -147,6 +147,12 @@ def build_registry(settings: Settings, log=print) -> dict[str, LoadedModel]:
 
     registry: dict[str, LoadedModel] = {}
     for name, source in settings.models:
+        if name in settings.lazy_models:
+            log(
+                f"[engine] registered {name} as on-demand "
+                f"(idle TTL {settings.model_idle_ttl_seconds}s)"
+            )
+            continue
         started = time.time()
         model = load_model(name, source, settings, log=log)
         registry[name] = model

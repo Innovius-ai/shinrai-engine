@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
 from shinrai_engine.app import create_app
@@ -43,6 +45,11 @@ def test_api_models_shape(tiny_registry):
             "languages_hint": None,
             "precision": "fp32",
             "precision_warning": None,
+            "state": "loaded",
+            "on_demand": False,
+            "idle_ttl_seconds": None,
+            "providers": ["CPUExecutionProvider"],
+            "self_test": "not_run",
         }
     ]
 
@@ -125,3 +132,36 @@ def test_analyze_limits(tiny_bundle, tmp_path):
     assert client.post("/api/analyze", json={"texts": ["a", "b", "c"]}).status_code == 413
     assert client.post("/api/analyze", json={"text": "x" * 51}).status_code == 413
     assert client.post("/api/analyze", json={"text": "short text"}).status_code == 200
+
+
+def test_retained_model_activates_and_unloads_after_idle(tiny_bundle, tmp_path):
+    from shinrai_engine.config import load_settings
+    from shinrai_engine.registry import build_registry
+
+    settings = load_settings(
+        {
+            "SHINRAI_MODELS": f"current={tiny_bundle},retained={tiny_bundle}",
+            "SHINRAI_LAZY_MODELS": "retained",
+            "SHINRAI_MODEL_IDLE_TTL_SECONDS": "1",
+            "SHINRAI_MODEL_CACHE": str(tmp_path),
+            "SHINRAI_SELF_TEST": "off",
+        }
+    )
+    registry = build_registry(settings, log=lambda *a: None)
+    assert set(registry) == {"current"}
+    with TestClient(create_app(settings, registry)) as client:
+        before = {row["name"]: row for row in client.get("/api/models").json()}
+        assert before["retained"]["state"] == "cold"
+        assert before["retained"]["idle_ttl_seconds"] == 1
+
+        activated = client.post("/api/models/retained/activate")
+        assert activated.status_code == 200
+        assert activated.json()["state"] == "loaded"
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            rows = {row["name"]: row for row in client.get("/api/models").json()}
+            if rows["retained"]["state"] == "cold":
+                break
+            time.sleep(0.1)
+        assert rows["retained"]["state"] == "cold"
