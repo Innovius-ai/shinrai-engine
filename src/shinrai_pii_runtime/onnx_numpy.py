@@ -137,11 +137,22 @@ class NumpyOnnxPredictor:
         self,
         texts: list[str],
         *,
-        batch_size: int = 16,
+        batch_size: int = 4,
+        check_cancel=None,
         recall_floor: float | None = None,
         segment: str | None = None,
         proclitic_completion: str | None = None,
     ) -> list[list[dict]]:
+        if check_cancel is not None:
+            check_cancel()
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        if len(texts) > batch_size:
+            return [entities for start in range(0, len(texts), batch_size)
+                    for entities in self.predict(texts[start:start + batch_size],
+                        batch_size=batch_size, check_cancel=check_cancel,
+                        recall_floor=recall_floor, segment=segment,
+                        proclitic_completion=proclitic_completion)]
         if recall_floor is None:
             recall_floor = getattr(self, "default_recall_floor", None)
         if proclitic_completion is None:
@@ -160,6 +171,7 @@ class NumpyOnnxPredictor:
                 texts,
                 self._merge_windows,
                 batch_size=batch_size,
+                check_cancel=check_cancel,
                 recall_floor=recall_floor,
                 proclitic_completion=proclitic_completion,
             )
@@ -181,6 +193,8 @@ class NumpyOnnxPredictor:
         n_windows = input_ids.shape[0]
 
         for start in range(0, n_windows, batch_size):
+            if check_cancel is not None:
+                check_cancel()
             window_ids = list(range(start, min(start + batch_size, n_windows)))
             outputs = self.session.run(
                 None,

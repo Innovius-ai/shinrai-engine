@@ -82,11 +82,14 @@ def predict_segmented(predict, texts: list[str], merge, **kwargs) -> list[list[d
             owner.append((ti, s))
     per_text: list[list[dict]] = [[] for _ in texts]
     if flat:
-        for (ti, start), ents in zip(owner, predict(flat, **kwargs), strict=True):
-            for ent in ents:
-                ent = dict(ent)
-                ent["span"] = [ent["span"][0] + start, ent["span"][1] + start]
-                per_text[ti].append(ent)
+        size = max(1, int(kwargs.get("batch_size", 4)))
+        for offset in range(0, len(flat), size):
+            predicted = predict(flat[offset:offset + size], **kwargs)
+            for (ti, start), ents in zip(owner[offset:offset + size], predicted, strict=True):
+                for ent in ents:
+                    ent = dict(ent)
+                    ent["span"] = [ent["span"][0] + start, ent["span"][1] + start]
+                    per_text[ti].append(ent)
     return [merge(ents) for ents in per_text]
 
 
