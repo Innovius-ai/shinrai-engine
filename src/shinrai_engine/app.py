@@ -185,6 +185,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
         default_model = registry[default_name]
         return {
             "status": "ok",
+            "admission": {"pending": len(pending), "capacity": settings.max_pending},
             "models": sorted(configured),
             "loaded_models": sorted(registry),
             "device": device(),
