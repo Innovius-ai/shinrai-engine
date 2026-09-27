@@ -23,8 +23,13 @@ from pathlib import Path
 import numpy as np
 
 from .decode import (
+    DecoderSettings,
+    check_settings_heads,
+    default_decoder_settings,
     default_proclitic_completion,
     default_recall_floor,
+    head_recall_floor,
+    normalise_decoder_settings,
     normalise_proclitic_completion,
     spans_from_labels,
 )
@@ -80,6 +85,7 @@ class NumpyOnnxPredictor:
         window: int | None = None,
         intra_op_threads: int | None = None,
         proclitic_completion: str | None = None,
+        decoder_settings: DecoderSettings | dict | str | None = None,
     ):
         import onnxruntime as ort
         from transformers import AutoTokenizer
@@ -114,6 +120,14 @@ class NumpyOnnxPredictor:
             else default_proclitic_completion(meta)
         )
         self.heads = list(meta["heads"])
+        # D23 / D21 (2026-09-08): the per-language settings block, same precedence as the
+        # torch Predictor — argument > SHINRAI_DECODER_SETTINGS > checkpoint stamp > off.
+        self.decoder_settings: DecoderSettings = (
+            normalise_decoder_settings(decoder_settings)
+            if decoder_settings is not None
+            else default_decoder_settings(meta)
+        )
+        check_settings_heads(self.decoder_settings, self.heads)
         self.window = int(window or meta.get("max_length") or 512)
         self.stride = max(32, self.window // 8)
         self.tokenizer = AutoTokenizer.from_pretrained(str(checkpoint_dir / "tokenizer"))
@@ -142,6 +156,8 @@ class NumpyOnnxPredictor:
         recall_floor: float | None = None,
         segment: str | None = None,
         proclitic_completion: str | None = None,
+        lang: str | None = None,
+        decoder_settings: DecoderSettings | dict | str | None = None,
     ) -> list[list[dict]]:
         if check_cancel is not None:
             check_cancel()
@@ -152,12 +168,18 @@ class NumpyOnnxPredictor:
                     for entities in self.predict(texts[start:start + batch_size],
                         batch_size=batch_size, check_cancel=check_cancel,
                         recall_floor=recall_floor, segment=segment,
-                        proclitic_completion=proclitic_completion)]
+                        proclitic_completion=proclitic_completion,
+                        lang=lang, decoder_settings=decoder_settings)]
         if recall_floor is None:
             recall_floor = getattr(self, "default_recall_floor", None)
         if proclitic_completion is None:
             proclitic_completion = getattr(self, "proclitic_completion", None)
         proclitic_completion = normalise_proclitic_completion(proclitic_completion)
+        if decoder_settings is None:
+            settings = getattr(self, "decoder_settings", None) or DecoderSettings()
+        else:
+            settings = normalise_decoder_settings(decoder_settings)
+            check_settings_heads(settings, getattr(self, "heads", ()) or ())
         if segment is not None:
             # sentence-sized pieces (2026-08-22 long-input finding); None is
             # byte-identical to the sliding-window decode below
@@ -174,6 +196,8 @@ class NumpyOnnxPredictor:
                 check_cancel=check_cancel,
                 recall_floor=recall_floor,
                 proclitic_completion=proclitic_completion,
+                lang=lang,
+                decoder_settings=settings,
             )
         per_text: list[list[dict]] = [[] for _ in texts]
         encoding = self.tokenizer(
@@ -214,7 +238,9 @@ class NumpyOnnxPredictor:
                     logits = named[f"logits_{head.lower()}"][local_i]
                     temp = float(self.temperatures.get(head, 1.0)) or 1.0
                     probs = _softmax(logits / temp)
-                    ids, conf, flip = decode_with_floor(probs, recall_floor)
+                    ids, conf, flip = decode_with_floor(
+                        probs, head_recall_floor(settings, lang, head, recall_floor)
+                    )
                     label_ids[head] = ids.tolist()
                     confidences[head] = conf.tolist()
                     rescued[head] = flip.tolist()
@@ -227,6 +253,8 @@ class NumpyOnnxPredictor:
                     confidences,
                     evidence_by_head=rescued,
                     proclitic_completion=proclitic_completion,
+                    lang=lang,
+                    settings=settings,
                 )
                 entities = self._attach_attrs(named, local_i, token_offsets, entities)
                 per_text[sample_map[window_i]].extend(entities)
