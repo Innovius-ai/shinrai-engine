@@ -32,3 +32,5 @@ download or a mounted volume (see the shinrai-engine README).
    defaults `batch_size` to 4, and splits `texts` into `batch_size` chunks;
    `predict_segmented` calls `predict` in `batch_size` chunks. The cancel hook
    runs before each chunk and each window batch.
+3. Public-repo hygiene: a personal name is removed from one `decode.py`
+   comment (the D23 decoder-floor note).

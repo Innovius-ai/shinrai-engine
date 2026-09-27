@@ -373,7 +373,7 @@ def complete_proclitic_spans(entities: list[dict], text: str) -> list[dict]:
 
 
 # --- D23 / D21: stampable, per-language decoder settings ----------------------
-# docs/38 2026-09-08 (Robert): D23 GO — per-head per-language decoder floors (ja ORG 0.20,
+# docs/38 2026-09-08: D23 GO — per-head per-language decoder floors (ja ORG 0.20,
 # ko CITY 0.20) + ja particle strip + ko in-word gap fill as stamped keys; D21 — L6 span
 # continuity as a stamped setting. Basis: research/competitive/eastasian/DIAGNOSIS-2026-09-07.md
 # §3.6 / §5 (rules c and d measured on stored predictions; the gap fill costs ja −15, so every
