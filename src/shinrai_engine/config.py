@@ -59,6 +59,8 @@ class Settings:
     execution_provider: str = "auto"  # auto | cpu | cuda
     threads: int = 0  # 0 = onnxruntime default
     max_concurrent: int = 1
+    max_pending: int = 8
+    window_batch_size: int = 4
     api_key: str | None = None
     max_text_chars: int = 200_000
     max_texts: int = 64
@@ -180,6 +182,8 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         execution_provider=execution_provider,
         threads=_int(env, "SHINRAI_THREADS", 0),
         max_concurrent=max_concurrent,
+        max_pending=_int(env, "SHINRAI_MAX_PENDING", 8, minimum=1),
+        window_batch_size=_int(env, "SHINRAI_WINDOW_BATCH_SIZE", 4, minimum=1),
         api_key=_read_api_key(env),
         max_text_chars=_int(env, "SHINRAI_MAX_TEXT_CHARS", 200_000, minimum=1),
         max_texts=_int(env, "SHINRAI_MAX_TEXTS", 64, minimum=1),

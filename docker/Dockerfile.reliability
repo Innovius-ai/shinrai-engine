@@ -1,0 +1,7 @@
+# Build with the verified local deployed runtime image. Dependency versions stay fixed.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION}
+COPY src /app/src
+ENV PYTHONPATH=/app/src SHINRAI_WINDOW_BATCH_SIZE=4 SHINRAI_MAX_PENDING=8

@@ -26,6 +26,22 @@ from .registry import LoadedModel
 CONFIDENCE_TOLERANCE = 1e-3
 
 
+def run_smoke(model: LoadedModel, log=print) -> bool:
+    """Actual inference for v1.4 when no exact release golden is supplied.
+
+    This is deliberately labelled smoke, never reported as golden parity.
+    """
+    text = "Anna Müller wohnt in Berlin."
+    result = model.predictor.predict([text], batch_size=4)
+    ok = isinstance(result, list) and len(result) == 1 and bool(result[0])
+    if ok:
+        ok = all(0 <= e['span'][0] < e['span'][1] <= len(text)
+                 and text[e['span'][0]:e['span'][1]] == e['text'] for e in result[0])
+        ok = ok and any(e['type'] == 'PERSON' and e['span'][0] < 11 for e in result[0])
+    log(f"[selftest] {model.name}: inference smoke {'passed' if ok else 'failed'} (golden parity unavailable)")
+    return bool(ok)
+
+
 def _marker_repo_basename(bundle_dir: Path) -> str | None:
     try:
         marker = json.loads((bundle_dir / ".shinrai-complete").read_text(encoding="utf-8"))
@@ -133,6 +149,11 @@ def run_all(registry: dict[str, LoadedModel], mode: str, log=print) -> None:
         try:
             golden = load_golden(model.bundle_dir, model.name)
             if golden is None:
+                if model.name == 'v1.4':
+                    ok = run_smoke(model, log=log)
+                    model.self_test = 'smoke_passed' if ok else 'failed'
+                    all_ok = all_ok and ok
+                    continue
                 log(f"[selftest] {model.name}: no golden file found — skipped")
                 model.self_test = "skipped"
                 continue

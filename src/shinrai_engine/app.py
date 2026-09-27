@@ -27,12 +27,15 @@ import asyncio
 import gc
 import hmac
 import time
+import threading
+import json
+import re
 from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shinrai_pii_runtime import scrub_invisibles, to_legacy_entities
 
@@ -57,11 +60,20 @@ class AnalyzeRequest(BaseModel):
     threshold: float | None = None
     merge_persons: bool = True
     segment: Literal["auto", "sentence", "none", "whole"] | None = "auto"
+    processing_timeout_s: float = Field(default=90.0, gt=0, le=90.0)
+    # BCP-47-ish language tag ("de", "pt-BR", "zh_Hant"); one per request, applies to
+    # every text. It keys the per-language decoder settings a checkpoint stamps. None
+    # (omitted) = no per-language setting fires, same decode as before this field.
+    language: str | None = Field(
+        default=None, min_length=1, max_length=35,
+        pattern=r"^[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8})*$",
+    )
 
 
 def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
     metrics = ServeMetrics()
     inference_gate = asyncio.Semaphore(settings.max_concurrent)
+    pending: set[asyncio.Task] = set()
     default_name = settings.default_model
     configured = dict(settings.models)
     last_used: dict[str, float] = {}
@@ -180,6 +192,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
         default_model = registry[default_name]
         return {
             "status": "ok",
+            "admission": {"pending": len(pending), "capacity": settings.max_pending},
             "models": sorted(configured),
             "loaded_models": sorted(registry),
             "device": device(),
@@ -218,15 +231,27 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                 {"error": f"unknown model {model_name!r}", "models": sorted(configured)},
                 status_code=404,
             )
-        async with inference_gate:
-            try:
-                model = await activate_model(model_name)
-            except Exception as exc:
-                print(f"[engine] activation failed for {model_name}: {type(exc).__name__}")
-                return JSONResponse(
-                    {"error": "model activation failed", "model": model_name},
-                    status_code=503,
-                )
+        if len(pending) >= settings.max_pending:
+            return JSONResponse({"error": "queue_full", "processing_started": False},
+                                status_code=429, headers={"Retry-After": "5"})
+        async def owned_activation():
+            async with inference_gate:
+                return await activate_model(model_name)
+        def finished(task):
+            pending.discard(task)
+            if not task.cancelled():
+                task.exception()
+        owner = asyncio.create_task(owned_activation())
+        pending.add(owner)
+        owner.add_done_callback(finished)
+        try:
+            # Model loading/self-test is threaded too: retain ownership on timeout.
+            model = await asyncio.wait_for(asyncio.shield(owner), timeout=90)
+        except TimeoutError:
+            return JSONResponse({"error": "processing_timeout"}, status_code=504)
+        except Exception as exc:
+            print(f"[engine] activation failed for {model_name}: {type(exc).__name__}")
+            return JSONResponse({"error": "model activation failed", "model": model_name}, status_code=503)
         return _model_info(
             model,
             model_name,
@@ -236,8 +261,12 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
         )
 
     @app.post("/api/analyze", dependencies=auth_dep)
-    async def api_analyze(request: AnalyzeRequest):
+    async def api_analyze(request: AnalyzeRequest, http_request: Request):
         started = time.time()
+        request_id = http_request.headers.get('X-Request-Id', '')
+        request_id = request_id if re.fullmatch(r'[a-f0-9]{16,64}', request_id) else None
+        texts = request.texts if request.texts is not None else [request.text] if request.text is not None else []
+        failure = 'invalid_request'
         metrics.start_request()
         ok = False
         try:
@@ -254,10 +283,14 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                     {"error": f"too many texts (max {settings.max_texts})"}, status_code=413
                 )
             if any(len(t) > settings.max_text_chars for t in texts):
+                failure = 'too_large'
                 return JSONResponse(
                     {"error": f"text too long (max {settings.max_text_chars} chars)"},
                     status_code=413,
                 )
+            if sum(map(len, texts)) > settings.max_text_chars:
+                failure = 'too_large'
+                return JSONResponse({"error": "aggregate text limit exceeded"}, status_code=413)
             model_name = request.model or default_name
             if model_name not in configured:
                 return JSONResponse(
@@ -274,26 +307,59 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
             texts = [scrub_invisibles(t) for t in texts]
 
             inference_started = time.time()
-            async with inference_gate:
-                try:
+            if len(pending) >= settings.max_pending:
+                failure = 'queue_full'
+                return JSONResponse({"error": "queue_full", "processing_started": False},
+                                    status_code=429, headers={"Retry-After": "5"})
+            cancelled = threading.Event()
+            deadline = time.monotonic() + request.processing_timeout_s
+
+            def check_cancel():
+                if cancelled.is_set() or time.monotonic() >= deadline:
+                    raise TimeoutError("inference deadline exceeded")
+
+            async def owned_inference():
+                # This task owns the permit until the actual thread exits.
+                # HTTP timeout/disconnect never cancels this owner task.
+                async with inference_gate:
+                    check_cancel()
                     model = await activate_model(model_name)
-                except Exception as exc:
-                    print(f"[engine] activation failed for {model_name}: {type(exc).__name__}")
-                    return JSONResponse(
-                        {"error": "model activation failed", "model": model_name},
-                        status_code=503,
+                    check_cancel()
+                    result = await asyncio.to_thread(
+                        _predict_with_stats, model.predictor, texts, request.segment,
+                        settings.window_batch_size, check_cancel, request.language,
                     )
-                predictor = model.predictor
-                # EVERYTHING that touches the tokenizer runs in this one
-                # gated thread: the HF fast tokenizer is not safe under
-                # concurrent calls (Rust core: 'Already borrowed'), and any
-                # tokenizer work left on the event loop stalls /healthz for
-                # the length of a long document.
-                per_text, stats = await asyncio.to_thread(
-                    _predict_with_stats, predictor, texts, request.segment
-                )
-                if model_name in settings.lazy_models:
-                    last_used[model_name] = time.monotonic()
+                    check_cancel()
+                    if model_name in settings.lazy_models:
+                        last_used[model_name] = time.monotonic()
+                    return model.predictor, result
+
+            def finished(task):
+                pending.discard(task)
+                if not task.cancelled():
+                    task.exception()  # Retrieve failures after abandoned HTTP requests.
+
+            owner = asyncio.create_task(owned_inference())
+            pending.add(owner)
+            owner.add_done_callback(finished)
+            try:
+                while not owner.done():
+                    if time.monotonic() >= deadline or await http_request.is_disconnected():
+                        raise TimeoutError()
+                    await asyncio.wait({owner}, timeout=min(0.2, max(0, deadline - time.monotonic())))
+                predictor, (per_text, stats) = owner.result()
+            except TimeoutError:
+                failure = 'processing_timeout'
+                return JSONResponse({"error": "processing_timeout"}, status_code=504)
+            except asyncio.CancelledError:
+                failure = 'cancelled'
+                raise
+            except Exception as exc:
+                failure = 'backend_unavailable'
+                print(f"[engine] inference failed: {type(exc).__name__}")
+                return JSONResponse({"error": "backend_unavailable"}, status_code=503)
+            finally:
+                cancelled.set()
             inference_ms = round((time.time() - inference_started) * 1000, 1)
 
             results = []
@@ -318,6 +384,10 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                 "release_channel": settings.release_channel,
             }
         finally:
+            print(json.dumps({'event': 'inference', 'request_id': request_id, 'ok': ok,
+                              'code': None if ok else failure, 'n': len(texts),
+                              'chars': sum(map(len, texts)), 'max_chars': max(map(len, texts), default=0),
+                              'pending': len(pending), 'ms': round((time.time() - started) * 1000, 1)}))
             metrics.finish_request(
                 ok=ok, duration_ms=round((time.time() - started) * 1000, 1)
             )
@@ -326,7 +396,8 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
 
 
 def _predict_with_stats(
-    predictor, texts: list[str], segment: str | None = "auto"
+    predictor, texts: list[str], segment: str | None = "auto", batch_size: int = 4,
+    check_cancel=None, language: str | None = None,
 ) -> tuple[list, list[dict]]:
     """Inference plus per-text stats, in ONE worker thread.
 
@@ -339,11 +410,17 @@ def _predict_with_stats(
     if segment not in (None, "auto", "sentence", "none", "whole"):
         raise ValueError("segment must be auto, sentence, none, whole or null")
     decode_segment = None if segment in (None, "none", "whole") else segment
-    per_text = predictor.predict(texts, segment=decode_segment)
+    # lang is passed ONLY when the caller named a language: the call without it stays
+    # identical to the pre-language engine (and to predictors without the kwarg).
+    lang_kw = {"lang": language} if language is not None else {}
+    per_text = predictor.predict(texts, segment=decode_segment, batch_size=batch_size,
+                                 check_cancel=check_cancel, **lang_kw)
     window, stride = predictor.window, predictor.stride
     content, step = window - 2, window - 2 - stride
     stats = []
     for text in texts:
+        if check_cancel is not None:
+            check_cancel()
         n_tokens = len(predictor.tokenizer(text, add_special_tokens=True)["input_ids"])
         n_content = max(n_tokens - 2, 0)
         n_windows = 1 if n_content <= content else 1 + -(-(n_content - content) // step)

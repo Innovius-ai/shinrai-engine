@@ -72,12 +72,18 @@ def load_label_space(path: str | Path) -> LabelSpace:
     path = Path(path)
     with path.open(encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
+    if not isinstance(raw, dict) or raw.get("extends"):
+        raise ValueError(f"{path}: expected a complete standalone label schema, not a delta")
+    if not {"schema_version", "heads", "attributes", "api_mapping"} <= raw.keys():
+        raise ValueError(f"{path}: incomplete label schema")
 
     heads = {
         name: HeadSpace(name=name, tiers=tuple(spec["tiers"]), labels=tuple(spec["labels"]))
         for name, spec in raw["heads"].items()
     }
     for head in heads.values():
+        if not head.labels or len(set(head.labels)) != len(head.labels):
+            raise ValueError(f"head {head.name}: labels must be nonempty and unique")
         if head.labels[0] != "O":
             raise ValueError(f"head {head.name}: labels[0] must be 'O', got {head.labels[0]}")
 

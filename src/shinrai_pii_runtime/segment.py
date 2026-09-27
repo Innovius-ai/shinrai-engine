@@ -23,7 +23,23 @@ import re
 # "z. B.") are NOT special-cased: a split after "Dr." costs nothing for
 # detection because the name still sits whole inside the next piece, and the
 # merge step re-joins an entity only if both halves were predicted anyway.
-_SENT_END = re.compile(r"(?<=[.!?…。！？])[\"'»”’)\]]*\s+|\n[ \t]*\n")
+# 2026-09-24 (D-N2 readout): a 1-2 digit ordinal before the period («15. März», «12. Juni», «3. Sept.») is not a
+# sentence end - the split cut every German / Polish / Russian day-month date in two (chat DATE exact 165 vs 225
+# whole-text). Four-digit years («… im Jahr 2024. Dann») still end a sentence.
+_SENT_END = re.compile(r"(?<=[.!?…。！？])(?<![^\d]\d\.)(?<![^\d]\d\d\.)(?<!^\d\.)(?<!^\d\d\.)[\"'»”’)\]]*\s+|\n[ \t]*\n")
+
+_ABBREV_RE = re.compile(r"(?<![^\W\d_])\d{1,2}\.?\s+([^\W\d_]{1,5})\.[\"'»”’)\]]*$")   # «3. Sept.», «10 окт.» - a day first
+
+
+def _abbrev_before(text: str, pos: int) -> bool:
+    """True when the terminator at ``pos`` closes a month abbreviation («3. Sept. 2025», «10 окт. 2023»):
+    the same 15-locale abbreviation inventory the temporal-negatives training rule uses."""
+    m = _ABBREV_RE.search(text[max(0, pos - 12):pos])
+    if not m:
+        return False
+    from .temporal_negatives import _MONTH_ABBR  # local import: no training import at module load
+    return re.fullmatch(_MONTH_ABBR, m.group(1).lower()) is not None
+
 
 MIN_PIECE = 24  # characters; shorter tails are glued to the previous piece
 MAX_PIECE = 600  # characters; a run-on without terminators is cut at whitespace
@@ -35,6 +51,8 @@ def sentence_pieces(text: str) -> list[tuple[int, int]]:
     pieces: list[tuple[int, int]] = []
     pos = 0
     for m in _SENT_END.finditer(text):
+        if _abbrev_before(text, m.start()):
+            continue
         if m.start() > pos:
             pieces.append((pos, m.start()))
         pos = m.end()
@@ -51,10 +69,16 @@ def sentence_pieces(text: str) -> list[tuple[int, int]]:
             trimmed.append((s, e))
     # glue tiny tails onto their predecessor, cut over-long runs at whitespace
     out: list[tuple[int, int]] = []
+    lead: int | None = None   # a first piece shorter than MIN_PIECE («Dr.») is glued FORWARD (2026-09-24)
     for s, e in trimmed:
+        if lead is not None:
+            s, lead = lead, None
         if out and (e - s) < MIN_PIECE:
             ps, _ = out[-1]
             out[-1] = (ps, e)
+            continue
+        if not out and (e - s) < MIN_PIECE:
+            lead = s
             continue
         while (e - s) > MAX_PIECE:
             cut = text.rfind(" ", s + MIN_PIECE, s + MAX_PIECE)
@@ -66,6 +90,8 @@ def sentence_pieces(text: str) -> list[tuple[int, int]]:
                 s += 1
         if e > s:
             out.append((s, e))
+    if lead is not None and not out:
+        out.append((lead, len(text.rstrip())))
     return out
 
 
@@ -82,11 +108,14 @@ def predict_segmented(predict, texts: list[str], merge, **kwargs) -> list[list[d
             owner.append((ti, s))
     per_text: list[list[dict]] = [[] for _ in texts]
     if flat:
-        for (ti, start), ents in zip(owner, predict(flat, **kwargs), strict=True):
-            for ent in ents:
-                ent = dict(ent)
-                ent["span"] = [ent["span"][0] + start, ent["span"][1] + start]
-                per_text[ti].append(ent)
+        size = max(1, int(kwargs.get("batch_size", 4)))
+        for offset in range(0, len(flat), size):
+            predicted = predict(flat[offset:offset + size], **kwargs)
+            for (ti, start), ents in zip(owner[offset:offset + size], predicted, strict=True):
+                for ent in ents:
+                    ent = dict(ent)
+                    ent["span"] = [ent["span"][0] + start, ent["span"][1] + start]
+                    per_text[ti].append(ent)
     return [merge(ents) for ents in per_text]
 
 

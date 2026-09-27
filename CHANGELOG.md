@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.5 — 2026-09-27
+
+- `POST /api/analyze` accepts an optional `language` (BCP-47 tag, for
+  example `de`, `ja`, `pt-BR`). One language applies to every text in the
+  request. The engine passes it to the runtime, which uses it to select the
+  per-language decoder settings that a checkpoint stamps (per-head recall
+  floors, particle strip, in-word gap fill, word completion, name join).
+  The runtime lower-cases the tag, maps `_` to `-`, and falls back from the
+  full tag to its primary subtag (`pt-BR` -> `pt-br` -> `pt`). A malformed
+  value returns 422. Without `language`, no per-language setting applies.
+- Runtime re-vendored from shinrai-pii-bert
+  `64e09809c7dbe91153b4d895f9a379e7c5639a2c`. New: the stampable decoder
+  settings block (also settable per deployment with
+  `SHINRAI_DECODER_SETTINGS`), `temporal_negatives.py` (month tables the
+  decoder and the sentence splitter use), and stricter label-schema checks.
+  The engine's bounded-inference changes to the runtime (`check_cancel`,
+  batch chunking) are re-applied; see `src/shinrai_pii_runtime/README.md`.
+- Behaviour change without `language`: the re-vendored sentence splitter no
+  longer splits after a 1-2 digit day ordinal (`15. März`) or a month
+  abbreviation (`3. Sept. 2025`), and it glues a short first piece (`Dr.`)
+  forward. This changes `segment: "sentence"` output and the long-input part
+  of `segment: "auto"` (texts above 1,200 characters). Whole-text decode is
+  unchanged: `segment: "none"`/`"whole"` and every `auto` text up to 1,200
+  characters give identical entities. Measured on 324 mixed texts (en, de, es,
+  fr, and a few others) without `language`: v1.3 `auto` 17 texts differ
+  (1,715 -> 1,707 entities), `sentence` 103 differ; v1.4 `auto` 19 differ
+  (3,323 -> 3,317), `sentence` 124 differ. Every difference traces to changed
+  sentence pieces, except two 4th-decimal confidence changes from different
+  batch padding.
+- The entity output shape is unchanged, including `evidence`.
+
 ## 0.1.4 — 2026-09-11
 
 - Added retained-model lifecycle controls: entries named in
