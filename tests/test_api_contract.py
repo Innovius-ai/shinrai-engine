@@ -165,3 +165,72 @@ def test_retained_model_activates_and_unloads_after_idle(tiny_bundle, tmp_path):
                 break
             time.sleep(0.1)
         assert rows["retained"]["state"] == "cold"
+
+
+def _spy_predict(monkeypatch, tiny_registry) -> list[dict]:
+    """Wrap the tiny predictor's predict and record the kwargs of every call."""
+    _, registry = tiny_registry
+    predictor = next(iter(registry.values())).predictor
+    real = predictor.predict
+    calls: list[dict] = []
+
+    def spy(texts, **kwargs):
+        # the engine's call carries `segment`; the runtime's own recursive
+        # calls (segment / batch chunking) do not — record only the engine's
+        if "segment" in kwargs:
+            calls.append(kwargs)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(predictor, "predict", spy)
+    return calls
+
+
+def test_analyze_language_is_forwarded_to_predict(tiny_registry, monkeypatch):
+    calls = _spy_predict(monkeypatch, tiny_registry)
+    client = make_client(tiny_registry)
+    texts = ["Anna Miller lives in Berlin.", "Peter Schmidt works at the bakery."]
+    response = client.post("/api/analyze", json={"texts": texts, "language": "pt-BR"})
+    assert response.status_code == 200
+    # one language per request: the single predict call carries it for every text
+    assert len(calls) == 1
+    assert calls[0]["lang"] == "pt-BR"
+
+
+def test_analyze_without_language_passes_no_lang(tiny_registry, monkeypatch):
+    calls = _spy_predict(monkeypatch, tiny_registry)
+    client = make_client(tiny_registry)
+    for body in ({"text": "Anna Miller lives in Berlin."},
+                 {"text": "Anna Miller lives in Berlin.", "language": None}):
+        assert client.post("/api/analyze", json=body).status_code == 200
+    assert len(calls) == 2
+    assert all("lang" not in kw for kw in calls)
+
+
+def test_analyze_language_does_not_change_unstamped_output(tiny_registry):
+    """The tiny checkpoint stamps no per-language setting: language is inert."""
+    client = make_client(tiny_registry)
+    text = "Anna Miller lives in Berlin near the main station."
+    base = client.post("/api/analyze", json={"text": text}).json()["results"]
+    for language in ("de", "ja", "he", "pt-BR", "zh_Hant", "EN"):
+        with_lang = client.post("/api/analyze", json={"text": text, "language": language})
+        assert with_lang.status_code == 200
+        assert with_lang.json()["results"] == base
+
+
+def test_analyze_language_validation(tiny_registry, monkeypatch):
+    calls = _spy_predict(monkeypatch, tiny_registry)
+    client = make_client(tiny_registry)
+    for bad in ("", "d", "de;rm -rf", "../etc", "de--at", "-de", "de-", "x" * 36,
+                "de-" + "a" * 9, 42, ["de"], "日本語"):
+        response = client.post("/api/analyze", json={"text": "Anna Miller", "language": bad})
+        assert response.status_code == 422, bad
+    assert calls == []
+
+
+def test_entities_keep_evidence_with_and_without_language(tiny_registry):
+    client = make_client(tiny_registry)
+    for body in ({"text": "Anna Miller lives in Berlin."},
+                 {"text": "Anna Miller lives in Berlin.", "language": "de"}):
+        entities = client.post("/api/analyze", json=body).json()["results"][0]["entities"]
+        assert entities
+        assert all(e["evidence"] in ("argmax", "floor") for e in entities)

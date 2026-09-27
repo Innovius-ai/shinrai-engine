@@ -42,7 +42,7 @@ curl -s -X POST http://127.0.0.1:8080/api/analyze \
     "stats": {"chars": 63, "tokens": 18, "windows": 1}
   }],
   "timing_ms": {"total": 31.2, "inference": 28.9},
-  "version": "0.1.3", "release_channel": "public"
+  "version": "0.1.5", "release_channel": "public"
 }
 ```
 
@@ -146,8 +146,19 @@ consumers must convert — a `ü` is one code point but two UTF-8 bytes.
  "model": "v1.1",          // optional; default = first configured model
  "threshold": null,         // optional; checkpoint serve threshold, else legacy 0.7
  "segment": "auto",         // sentence-union decode for long inputs
+ "language": null,          // optional BCP-47 tag ("de", "ja", "pt-BR"), see below
  "merge_persons": true}     // join adjacent given+family name spans
 ```
+
+`language` names the language of every text in the request. It enables the
+per-language decoder settings that a checkpoint stamps in its `config.json`
+(per-head recall floors, particle strip, in-word gap fill and similar). The
+runtime lower-cases the tag, maps `_` to `-`, and looks up the exact tag first
+and then its primary subtag (`pt-BR` uses a `pt-br` entry, else `pt`). Accepted
+form: 2–8 letters, then optional `-`/`_` subtags of 1–8 letters or digits,
+35 characters max; anything else returns 422. Without `language`, no
+per-language setting applies, and a checkpoint without a stamp decodes the
+same with or without it.
 
 Entity `type` values: `FIRSTNAME`, `SURNAME`, `PERSON` (by detected name
 part), `CITY`, `STREET_ADDRESS`, `COMPANY`. Each entity carries `tier`,

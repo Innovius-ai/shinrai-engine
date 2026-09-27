@@ -61,6 +61,13 @@ class AnalyzeRequest(BaseModel):
     merge_persons: bool = True
     segment: Literal["auto", "sentence", "none", "whole"] | None = "auto"
     processing_timeout_s: float = Field(default=90.0, gt=0, le=90.0)
+    # BCP-47-ish language tag ("de", "pt-BR", "zh_Hant"); one per request, applies to
+    # every text. It keys the per-language decoder settings a checkpoint stamps. None
+    # (omitted) = no per-language setting fires, same decode as before this field.
+    language: str | None = Field(
+        default=None, min_length=1, max_length=35,
+        pattern=r"^[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8})*$",
+    )
 
 
 def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
@@ -320,7 +327,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                     check_cancel()
                     result = await asyncio.to_thread(
                         _predict_with_stats, model.predictor, texts, request.segment,
-                        settings.window_batch_size, check_cancel,
+                        settings.window_batch_size, check_cancel, request.language,
                     )
                     check_cancel()
                     if model_name in settings.lazy_models:
@@ -390,7 +397,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
 
 def _predict_with_stats(
     predictor, texts: list[str], segment: str | None = "auto", batch_size: int = 4,
-    check_cancel=None,
+    check_cancel=None, language: str | None = None,
 ) -> tuple[list, list[dict]]:
     """Inference plus per-text stats, in ONE worker thread.
 
@@ -403,8 +410,11 @@ def _predict_with_stats(
     if segment not in (None, "auto", "sentence", "none", "whole"):
         raise ValueError("segment must be auto, sentence, none, whole or null")
     decode_segment = None if segment in (None, "none", "whole") else segment
+    # lang is passed ONLY when the caller named a language: the call without it stays
+    # identical to the pre-language engine (and to predictors without the kwarg).
+    lang_kw = {"lang": language} if language is not None else {}
     per_text = predictor.predict(texts, segment=decode_segment, batch_size=batch_size,
-                                 check_cancel=check_cancel)
+                                 check_cancel=check_cancel, **lang_kw)
     window, stride = predictor.window, predictor.stride
     content, step = window - 2, window - 2 - stride
     stats = []
