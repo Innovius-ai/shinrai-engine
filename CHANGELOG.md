@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6 — 2026-10-01
+
+- Runtime re-vendored from shinrai-pii-bert
+  `9fdc40c3bbdfd7b37d856eb3e1188b59c8196c48`: the decoder of the ShinrAI
+  v1.5.3 release (21 heads including DATE and AGE, guard v11 from the
+  checkpoint stamp). A month abbreviation now counts as part of a date only
+  with its period, so "12. März 2026. Sie" no longer grows a DATE into the
+  next sentence.
+
 ## 0.1.5 — 2026-09-27
 
 - `POST /api/analyze` accepts an optional `language` (BCP-47 tag, for

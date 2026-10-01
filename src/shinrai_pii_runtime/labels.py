@@ -12,6 +12,27 @@ from pathlib import Path
 import yaml
 
 
+class UnmappedEntityTypeError(KeyError):
+    """A model head has no `api_mapping` entry in the label file.
+
+    Subclasses KeyError so existing `except KeyError` paths keep working; the
+    message names the head, the file and the mapped heads so the fix (re-vendor
+    the label file, or add the mapping) is readable from the log line.
+    """
+
+    def __init__(self, entity_type: str, label_space: "LabelSpace"):
+        self.entity_type = entity_type
+        known = ", ".join(sorted(label_space.api_mapping))
+        super().__init__(
+            f"entity type {entity_type!r} has no api_mapping entry in "
+            f"{label_space.source_path.name} (schema {label_space.schema_version}; "
+            f"mapped: {known}) — re-vendor the label file or add the mapping"
+        )
+
+    def __str__(self) -> str:  # KeyError.__str__ would repr() the message
+        return self.args[0]
+
+
 @dataclass(frozen=True)
 class HeadSpace:
     name: str
@@ -59,8 +80,17 @@ class LabelSpace:
 
     def api_type(self, entity_type: str, name_part: str | None = None) -> str:
         """Map a head name (+ PERSON name_part) to the legacy shinrai-encryption
-        API type string (FIRSTNAME/SURNAME/PERSON/CITY/STREET_ADDRESS/COMPANY)."""
-        mapping = self.api_mapping[entity_type]
+        API type string (FIRSTNAME/SURNAME/PERSON/CITY/STREET_ADDRESS/COMPANY,
+        DATE/AGE since labels-v3.2).
+
+        Raises UnmappedEntityTypeError (a KeyError) for a head the label file
+        does not map. The adapter lets it propagate: the backend records
+        `backend_error` and the request fails closed instead of silently
+        dropping that head's spans.
+        """
+        mapping = self.api_mapping.get(entity_type)
+        if mapping is None:
+            raise UnmappedEntityTypeError(entity_type, self)
         if isinstance(mapping, str):
             return mapping
         by_part = mapping["by_name_part"]

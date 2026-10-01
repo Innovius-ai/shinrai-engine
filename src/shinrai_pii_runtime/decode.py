@@ -399,6 +399,7 @@ DECODER_SETTING_KEYS = (
     "name_initials",         # {lang: [HEAD, ...]}    — N2b: a span grows left over a run of initials («С. И. Гири»)
     "date_span_join",        # true                   — D-N2: DATE fragments join and grow over day / month / year tokens
     "street_number_join",    # true                   — D-N3: a STREET span takes its adjacent house number («Hauptstraße» 5, 18 «rue des Lilas»)
+    "date_identifier_exclusion",  # true              — D-N4: no DATE inside an identifier (ECLI, 2004/17/EC, No 883/2004, C-83/14)
 )
 _SETTINGS_OFF = ("", "off", "none", "no", "0", "false", "{}")
 
@@ -475,6 +476,7 @@ class DecoderSettings:
     name_initials: dict[str, tuple[str, ...]] = field(default_factory=dict)
     date_span_join: bool = False
     street_number_join: bool = False
+    date_identifier_exclusion: bool = False
 
     @property
     def off(self) -> bool:
@@ -489,6 +491,7 @@ class DecoderSettings:
             or self.name_initials
             or self.date_span_join
             or self.street_number_join
+            or self.date_identifier_exclusion
         )
 
     def to_json(self) -> dict:
@@ -516,6 +519,8 @@ class DecoderSettings:
             out["date_span_join"] = True
         if self.street_number_join:
             out["street_number_join"] = True
+        if self.date_identifier_exclusion:
+            out["date_identifier_exclusion"] = True
         return out
 
     def initials_heads(self, lang: str | None) -> tuple[str, ...]:
@@ -617,7 +622,13 @@ class DecoderSettings:
             street_join = street_join.strip().lower() not in _SETTINGS_OFF
         if not isinstance(street_join, bool | int):
             raise ValueError(f"street_number_join must be a boolean, got {street_join!r}")
-        return cls(floors, tuple(strip), gaps, bool(continuity), repair, completion, joins, initials, bool(date_join), bool(street_join))
+        id_excl = raw.get("date_identifier_exclusion", False)
+        if isinstance(id_excl, str):
+            id_excl = id_excl.strip().lower() not in _SETTINGS_OFF
+        if not isinstance(id_excl, bool | int):
+            raise ValueError(f"date_identifier_exclusion must be a boolean, got {id_excl!r}")
+        return cls(floors, tuple(strip), gaps, bool(continuity), repair, completion, joins, initials, bool(date_join), bool(street_join),
+                   bool(id_excl))
 
 
 def _heads_by_lang(raw: object, key: str, allowed: frozenset[str] | None = None) -> dict[str, tuple[str, ...]]:
@@ -996,8 +1007,11 @@ def join_name_spans(entities: list[dict], text: str, heads: tuple[str, ...]) -> 
 # never touches another head.
 from . import temporal_negatives as _tn
 
+# A month ABBREVIATION counts only with its period, as in the training rule (temporal_negatives): «sie» (pl, August)
+# is the German pronoun «Sie», «mar» (es) the sea — without the period the grow step swallowed the next sentence's
+# first word («12. März 2026. Sie erreichen» → DATE «12. März 2026. Sie»; v1.5.3 rollout, 2026-10-01).
 _DATE_WORD = re.compile(
-    r"(?i)^(?:" + _tn._MONTH_FULL[3:-1] + r"|" + _tn._MONTH_ABBR[3:-1] + r"\.?"
+    r"(?i)^(?:" + _tn._MONTH_FULL[3:-1] + r"|(?:" + _tn._MONTH_ABBR[3:-1] + r")\."
     r"|\d{1,2}(?:st|nd|rd|th)?\.?|\d{4}|\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?|\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?"
     r"|г\.|року|года|году|r\.|roku|de|of|the|del|di|du|le|den|am|im|el|à)$"
 )
@@ -1007,21 +1021,32 @@ _DATE_REACH = 3   # tokens grown on each side at most
 
 
 _DATE_CONNECTORS = {"de", "of", "the", "del", "di", "du", "le", "den", "am", "im", "el", "à", "г.", "года", "году", "року", "r.", "roku"}
-_DATE_MONTH = re.compile(r"(?i)^(?:" + _tn._MONTH_FULL[3:-1] + r"|" + _tn._MONTH_ABBR[3:-1] + r"\.?)$")
+_DATE_MONTH = re.compile(r"(?i)^(?:" + _tn._MONTH_FULL[3:-1] + r"|(?:" + _tn._MONTH_ABBR[3:-1] + r")\.)$")   # abbreviation + period only
 _DATE_DAY = re.compile(r"^\d{1,2}(?:st|nd|rd|th)?\.?$")
 _DATE_STRONG = re.compile(r"^(?:\d{4}|\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})$")
 
 
 def _next_token(text: str, pos: int):
+    """(token, end) after the glue at pos; a trailing period stays on the token («Mär.», «r.», «г.»), so dotted month
+    abbreviations and connectors are recognised as such (bare abbreviations are not months: «Sie», «mar»)."""
     m = re.match(r"[\s./,\-]{0,3}", text[pos:]); gap = m.group(0)
     tok = _DATE_TOKEN.match(text[pos + len(gap):])
-    return (tok.group(0), pos + len(gap) + tok.end()) if tok else (None, pos)
+    if not tok:
+        return None, pos
+    end = pos + len(gap) + tok.end(); word = tok.group(0)
+    if text[end:end + 1] == "." and re.search(r"[^\W\d_]", word):   # letters only: «2023.» keeps its sentence period outside
+        word, end = word + ".", end + 1
+    return word, end
 
 
 def _prev_token(text: str, pos: int):
+    """(token, start) before the glue at pos; a period right after the token stays on it (see _next_token)."""
     left = text[max(0, pos - 40):pos]
-    m = re.search(r"([^\s,;:()\[\]«»\"'./\-]+)([\s./,\-]{0,3})$", left)
-    return (m.group(1), max(0, pos - 40) + m.start(1)) if m else (None, pos)
+    m = re.search(r"([^\s,;:()\[\]«»\"'./\-]+)(\.?)([\s./,\-]{0,3})$", left)
+    if not m:
+        return None, pos
+    word = m.group(1) + (m.group(2) if re.search(r"[^\W\d_]", m.group(1)) else "")
+    return word, max(0, pos - 40) + m.start(1)
 
 
 def _grow_right(text: str, t: int):
@@ -1052,9 +1077,9 @@ def _grow_left(text: str, s: int):
     if _DATE_MONTH.match(tok) or _DATE_STRONG.match(tok):
         return start
     if _DATE_DAY.match(tok):
-        head = _DATE_TOKEN.match(text[s:])
+        head, _ = _next_token(text, s)                                  # the span's first token, period kept («Mär.»)
         numeric_tail = re.match(r"\d{1,2}[./-]\d{2,4}", text[s:])   # «05.2024» ← «12.05.2024»
-        return start if (head and (_DATE_MONTH.match(head.group(0)) or head.group(0).lower() in _DATE_CONNECTORS)) or numeric_tail else None
+        return start if (head and (_DATE_MONTH.match(head) or head.lower() in _DATE_CONNECTORS)) or numeric_tail else None
     return None
 
 
@@ -1117,6 +1142,40 @@ _HOUSE_RIGHT = re.compile(r"^(?:[ ,]{1,2}|\s(?:nr\.?|no\.?|n°|nº)\s?)(\d{1,4}[
 _HOUSE_LEFT = re.compile(r"(?<![\d.,:%/-])(\d{1,4}[a-zA-Z]?)[ ,]{1,2}$")
 
 
+# D-N4 (2026-09-28, legal-label-policy-v1 Q1 class B): year digits that are a component of an identifier string are
+# not DATE. MAPA fr / de showed the model tagging them (G14 s43: 21 of 27 fr and 23 of 44 de extra DATE spans were
+# ECLI / case-number years). Spacing-tolerant: MAPA text is pre-tokenised («EU : C : 1988 : 322»). Class A years with a
+# publication cue («OJ 2002 L 190», «ABl. 2010, L 338», «judgment of 17 May 1990») are not matched and stay DATE.
+_SP = r"\s*"
+_DASH = r"[-‑–]"
+_IDENTIFIER_PATTERNS = tuple(re.compile(p) for p in (
+    r"\bECLI" + _SP + ":" + _SP + r"[A-Z]{2}" + _SP + ":" + _SP + r"[A-Z0-9.]{1,20}" + _SP + ":" + _SP + r"\d{4}" + _SP + ":" + _SP + r"[\w.]+",
+    r"\b(?:EU|UE)" + _SP + ":" + _SP + r"[CTF]" + _SP + ":" + _SP + r"\d{4}" + _SP + ":" + _SP + r"\d+\b",
+    r"\b\d{1,4}" + _SP + "/" + _SP + r"\d{1,4}" + _SP + "/" + _SP + r"(?:EC|EU|CE|EG|UE|EWG|EEC|CEE|EGKS|Euratom|JI|GASP|PESC)\b",
+    r"(?:\bNo\.?|\bNr\.?|\bn°|\bnº|\bno\.|\bn\.|\bnr)" + _SP + r"\d{1,6}" + _SP + "/" + _SP + r"\d{2,4}\b(?:" + _SP + _DASH + _SP + r"\d{1,3}\b)?",
+    r"\b[CT]" + _SP + _DASH + _SP + r"\d{1,4}" + _SP + "/" + _SP + r"\d{2}\b(?:" + _SP + r"(?:P|R|RENV|DEP|SA|AJ)\b)?",
+    r"\(" + _SP + r"(?:[CT]" + _SP + _DASH + _SP + r")?\d{1,4}" + _SP + "/" + _SP + r"\d{2,4}" + _SP + "," + _SP + r"(?:ECLI" + _SP + ":" + _SP + r")?(?:EU|UE)" + _SP + ":",
+    r"\b[A-Z]{1,2}\s+\d{1,5}" + _SP + "/" + _SP + r"\d{4}" + _SP + _DASH + _SP + r"\d{1,3}\b",
+    r"\((?:EU|EG|UE|CE|EC|EWG|EEC|CEE)\)" + _SP + r"(?:No\.?|Nr\.?|n°|nº)?" + _SP + r"\d{2,4}" + _SP + "/" + _SP + r"\d{1,4}\b",
+))
+
+
+def identifier_regions(text: str) -> list[tuple[int, int]]:
+    """Character regions of identifier strings whose digits are never a DATE (policy class B)."""
+    return sorted({(m.start(), m.end()) for p in _IDENTIFIER_PATTERNS for m in p.finditer(text)})
+
+
+def drop_identifier_dates(entities: list[dict], text: str) -> list[dict]:
+    """D-N4: remove every DATE span that lies inside an identifier region (ECLI, instrument or case number)."""
+    if not any(e.get("type") == "DATE" for e in entities):
+        return entities
+    regions = identifier_regions(text)
+    if not regions:
+        return entities
+    return [e for e in entities
+            if e.get("type") != "DATE" or not any(a <= e["span"][0] and e["span"][1] <= b for a, b in regions)]
+
+
 def join_street_numbers(entities: list[dict], text: str) -> list[dict]:
     """D-N3: grow every STREET span over an adjacent house number; merge STREET spans that then overlap."""
     mine = sorted((dict(e) for e in entities if e.get("type") == "STREET"), key=lambda e: tuple(e["span"]))
@@ -1172,6 +1231,8 @@ def apply_decoder_settings(
         out = repair_numeric_spans(out, text, head)
     if settings.date_span_join:
         out = join_date_spans(out, text)
+    if settings.date_identifier_exclusion:
+        out = drop_identifier_dates(out, text)
     if settings.street_number_join:
         out = join_street_numbers(out, text)
     if settings.strips_particles(lang):
