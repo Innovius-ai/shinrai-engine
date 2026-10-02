@@ -29,9 +29,12 @@ from .decode import (
     default_proclitic_completion,
     default_recall_floor,
     head_recall_floor,
+    mark_signoff_spans,
     normalise_decoder_settings,
     normalise_proclitic_completion,
+    signoff_regions,
     spans_from_labels,
+    token_floors,
 )
 from .labels import load_label_space
 
@@ -43,7 +46,7 @@ ATTR_OUTPUT_PREFIX = "attr_logits_"
 
 
 def decode_with_floor(
-    probs: np.ndarray, recall_floor: float | None
+    probs: np.ndarray, recall_floor
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-token label ids, confidences and a rescued mask; numpy port of the torch
     recall-mode decode (training.predictor, 2026-08-19 / docs/39 D8). ``None`` = plain argmax.
@@ -234,17 +237,21 @@ class NumpyOnnxPredictor:
                 label_ids: dict[str, list[int]] = {}
                 confidences: dict[str, list[float]] = {}
                 rescued: dict[str, list[bool]] = {}
+                token_offsets = [tuple(o) for o in offsets[window_i].tolist()]
+                regions = signoff_regions(text) if settings.signoff_floor else []
                 for head in self.heads:
                     logits = named[f"logits_{head.lower()}"][local_i]
                     temp = float(self.temperatures.get(head, 1.0)) or 1.0
                     probs = _softmax(logits / temp)
-                    ids, conf, flip = decode_with_floor(
-                        probs, head_recall_floor(settings, lang, head, recall_floor)
-                    )
+                    floor = head_recall_floor(settings, lang, head, recall_floor)
+                    if head in settings.signoff_floor:
+                        per_token = token_floors(token_offsets, regions, floor, settings.signoff_floor[head])
+                        if per_token is not None:
+                            floor = np.asarray(per_token, dtype=probs.dtype)
+                    ids, conf, flip = decode_with_floor(probs, floor)
                     label_ids[head] = ids.tolist()
                     confidences[head] = conf.tolist()
                     rescued[head] = flip.tolist()
-                token_offsets = [tuple(o) for o in offsets[window_i].tolist()]
                 entities = spans_from_labels(
                     label_ids,
                     token_offsets,
@@ -256,6 +263,11 @@ class NumpyOnnxPredictor:
                     lang=lang,
                     settings=settings,
                 )
+                if regions:
+                    entities = mark_signoff_spans(
+                        entities, regions, settings.signoff_floor,
+                        {h: head_recall_floor(settings, lang, h, recall_floor) for h in settings.signoff_floor},
+                    )
                 entities = self._attach_attrs(named, local_i, token_offsets, entities)
                 per_text[sample_map[window_i]].extend(entities)
 

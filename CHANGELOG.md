@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.7 — 2026-10-02
+
+- Runtime re-vendored from shinrai-pii-bert
+  `4e72aea38f473c9240fe529321c334111e70f2f2`: the decoder key
+  `signoff_floor` (F001). A checkpoint that stamps it lowers that head's
+  floor on the one or two short lines after a closing formula
+  ("Mit freundlichen Grüßen," / "Max Munster"); a span rescued only by it
+  carries its own bar. Without the key the decode is unchanged.
+- `POST /api/analyze` applies that bar when the request sets no threshold
+  or one at or below the checkpoint's stamped `serve_threshold`; a stricter
+  request threshold holds for every span.
+
 ## 0.1.6 — 2026-10-01
 
 - Runtime re-vendored from shinrai-pii-bert

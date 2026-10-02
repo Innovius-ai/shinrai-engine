@@ -77,6 +77,7 @@ def to_legacy_entities(
     threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     text: str | None = None,
     merge_persons: bool = True,
+    signoff_bar: bool = False,
 ) -> list[dict]:
     # Threshold BEFORE merging. Merging first took min(confidence) across the
     # pair, so a weak family-name span (0.55) dragged a strong given name
@@ -84,7 +85,15 @@ def to_legacy_entities(
     # merge_persons=false correctly returned the given name. A missed person
     # is the worst possible outcome for a redaction engine; merging must only
     # ever combine spans that individually survive the gate.
-    entities = [e for e in entities if float(e.get("confidence", 1.0)) >= threshold]
+    # F001 (v1.6): a sign-off rescue carries its own ``bar`` (the stamped signoff floor). The
+    # caller decides with ``signoff_bar``: True at the stamped operating point or below it
+    # (serve.app.signoff_bar_applies), False for a stricter threshold, which then holds for
+    # every span.
+    entities = [
+        e for e in entities
+        if float(e.get("confidence", 1.0)) >= threshold
+        or (signoff_bar and e.get("bar") is not None and float(e.get("confidence", 1.0)) >= float(e["bar"]))
+    ]
     if merge_persons:
         entities = merge_person_spans(entities, text)
     legacy: list[dict] = []

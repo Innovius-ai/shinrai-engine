@@ -5,8 +5,8 @@ the shinrai-engine HTTP service runs ONNX detection without a checkout
 of the training repo, cross-repo pip access, or a torch wheel.
 
 - **Source repo:** shinrai-pii-bert
-- **Source commit:** `9fdc40c3bbdfd7b37d856eb3e1188b59c8196c48`
-- **Synced:** 2026-10-01
+- **Source commit:** `4e72aea38f473c9240fe529321c334111e70f2f2`
+- **Synced:** 2026-10-02
 - **Regenerate:** `scripts/vendor-engine.sh` in shinrai-pii-bert (requires the
   sibling checkout or `SHINRAI_ENGINE_REPO=<path>`)
 

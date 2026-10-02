@@ -400,6 +400,7 @@ DECODER_SETTING_KEYS = (
     "date_span_join",        # true                   — D-N2: DATE fragments join and grow over day / month / year tokens
     "street_number_join",    # true                   — D-N3: a STREET span takes its adjacent house number («Hauptstraße» 5, 18 «rue des Lilas»)
     "date_identifier_exclusion",  # true              — D-N4: no DATE inside an identifier (ECLI, 2004/17/EC, No 883/2004, C-83/14)
+    "signoff_floor",         # {HEAD: floor}          — F001 (v1.6): a lower floor on the 1–2 lines after a closing formula
 )
 _SETTINGS_OFF = ("", "off", "none", "no", "0", "false", "{}")
 
@@ -462,6 +463,177 @@ def _lookup(mapping: Mapping[str, object], lang: str | None):
     return mapping.get(primary)
 
 
+# F001 (research/v16/findings/F001-signoff-names.md, 2026-10-02): a name alone on its line
+# after a closing formula («Mit freundlichen Grüßen,» / «Max Munster») decodes at 0.27–0.41
+# entity mass where the same name inline reads 0.93. The register has no sentence around the
+# name; the floor, not the model, is the cheapest lever until the v1.6 sign-off carrier trains.
+# The table covers the 15 locales of the release. A line matches when, without its trailing
+# punctuation, it IS a formula (case-folded) — or, for the long formal formulas, starts with one.
+CLOSING_FORMULAS: tuple[str, ...] = (
+    # de
+    "mit freundlichen grüßen", "mit freundlichen grüssen", "freundliche grüße", "freundliche grüsse",
+    "mit besten grüßen", "beste grüße", "viele grüße", "liebe grüße", "herzliche grüße",
+    "mit herzlichen grüßen", "schöne grüße", "hochachtungsvoll", "mit freundlichem gruß", "gruß", "grüße", "mfg", "lg", "vg",
+    # en
+    "best regards", "kind regards", "warm regards", "warmest regards", "regards", "best wishes", "best",
+    "sincerely", "yours sincerely", "sincerely yours", "yours faithfully", "yours truly", "respectfully",
+    "cheers", "thanks", "thank you", "many thanks", "thanks and regards", "with best regards", "with kind regards",
+    # fr
+    "cordialement", "bien cordialement", "très cordialement", "bien à vous", "salutations distinguées",
+    "sincères salutations", "meilleures salutations", "bien amicalement", "amitiés",
+    # es
+    "atentamente", "saludos", "saludos cordiales", "un saludo", "un cordial saludo", "cordialmente", "muy atentamente",
+    # it
+    "cordiali saluti", "distinti saluti", "saluti", "un saluto", "cordialmente", "in fede", "grazie",
+    # pt
+    "atenciosamente", "cumprimentos", "melhores cumprimentos", "com os melhores cumprimentos", "abraços",
+    "saudações", "com os meus cumprimentos", "obrigado", "obrigada",
+    # pl
+    "z poważaniem", "pozdrawiam", "z wyrazami szacunku", "serdecznie pozdrawiam", "pozdrawiam serdecznie", "łączę pozdrowienia",
+    # ru / uk
+    "с уважением", "с наилучшими пожеланиями", "всего доброго", "всего хорошего", "спасибо",
+    "з повагою", "з найкращими побажаннями", "дякую", "щиро",
+    # tr
+    "saygılarımla", "saygılarımızla", "iyi çalışmalar", "selamlar", "teşekkürler", "sevgilerimle",
+    # ar / he
+    "مع خالص التحية", "مع التحية", "مع أطيب التحيات", "تحياتي", "وتفضلوا بقبول فائق الاحترام", "شكراً", "شكرا",
+    "בברכה", "בכבוד רב", "תודה", "בברכה רבה",
+    # ja / ko
+    "よろしくお願いいたします", "よろしくお願いします", "敬具", "草々", "以上",
+    "감사합니다", "고맙습니다", "안녕히 계세요",
+)
+# long formal formulas that run on to the end of their line («Veuillez agréer, Madame, …»)
+CLOSING_PREFIXES: tuple[str, ...] = (
+    "veuillez agréer", "je vous prie d'agréer", "je vous prie de croire", "recevez, madame", "recevez, monsieur",
+    "le saluto cordialmente", "la saludo atentamente", "le saluda atentamente", "reciba un cordial saludo",
+    "please do not hesitate", "yours sincerely,", "best regards,",
+)
+_CLOSING_SET = frozenset(CLOSING_FORMULAS)
+_TRAILING_PUNCT = " \t,.;:!—–-…。、"
+SIGNOFF_MAX_LINES = 2       # the name line and, at most, one more (title / role / company)
+SIGNOFF_MAX_LINE_CHARS = 60  # a longer line is prose, not a signature
+SIGNOFF_MAX_BLANK = 2        # blank lines allowed between the formula and the name
+
+
+def _is_closing_formula(line: str) -> bool:
+    core = line.strip().rstrip(_TRAILING_PUNCT).strip().casefold()
+    if not core or len(core) > 120:
+        return False
+    if core in _CLOSING_SET:
+        return True
+    return any(core.startswith(prefix) for prefix in CLOSING_PREFIXES)
+
+
+def signoff_regions(text: str) -> list[tuple[int, int]]:
+    """Character ranges of the 1–2 short non-empty lines that follow a closing-formula line
+    (up to ``SIGNOFF_MAX_BLANK`` blank lines in between). The decoder lowers the floor of the
+    ``signoff_floor`` heads inside these ranges only; everything else decodes unchanged."""
+    if not text or "\n" not in text:
+        return []
+    lines: list[tuple[int, int]] = []
+    pos = 0
+    for raw in text.split("\n"):
+        lines.append((pos, pos + len(raw)))
+        pos += len(raw) + 1
+    regions: list[tuple[int, int]] = []
+    for i, (start, end) in enumerate(lines):
+        if not _is_closing_formula(text[start:end]):
+            continue
+        j, blanks, taken = i + 1, 0, 0
+        while j < len(lines) and taken < SIGNOFF_MAX_LINES:
+            ls, le = lines[j]
+            body = text[ls:le]
+            if not body.strip():
+                if taken:
+                    break
+                blanks += 1
+                if blanks > SIGNOFF_MAX_BLANK:
+                    break
+                j += 1
+                continue
+            if len(body.strip()) > SIGNOFF_MAX_LINE_CHARS or _is_closing_formula(body):
+                break
+            lead = len(body) - len(body.lstrip())
+            regions.append((ls + lead, le - (len(body) - len(body.rstrip()))))
+            taken += 1
+            j += 1
+    return regions
+
+
+def token_floors(
+    offsets: list[tuple[int, int]],
+    regions: list[tuple[int, int]],
+    base: float | None,
+    signoff: float,
+) -> list[float] | None:
+    """Per-token floors for one head: ``min(signoff, base)`` on tokens inside a sign-off region,
+    ``base`` elsewhere (2.0 = never rescue, when the head decodes argmax). ``None`` when no token
+    falls in a region — the caller keeps the scalar floor and the decode stays byte-identical."""
+    if not regions:
+        return None
+    low = signoff if base is None else min(signoff, base)
+    high = 2.0 if base is None else base
+    floors: list[float] = []
+    hit = False
+    for s, e in offsets:
+        inside = e > s and any(rs <= s and e <= re_ for rs, re_ in regions)
+        hit = hit or inside
+        floors.append(low if inside else high)
+    return floors if hit else None
+
+
+_INITIAL_RE = re.compile(r"^\w\.$")
+
+
+def _name_like(surface: str) -> bool:
+    """Every whitespace part has two or more word characters, or is an initial («J.»). Rejects the
+    sub-word fragments a low floor produces («ж» from «Серж», «ל ל», a lone CJK character)."""
+    parts = surface.split()
+    if not parts:
+        return False
+    for part in parts:
+        core = part.strip(".,;:()\"'«»„“”")
+        if _INITIAL_RE.match(part) or (len(core) == 1 and part.endswith(".")):
+            continue
+        if sum(ch.isalnum() for ch in core) < 2:
+            return False
+    return True
+
+
+def mark_signoff_spans(
+    entities: list[dict],
+    regions: list[tuple[int, int]],
+    signoff_floor: Mapping[str, float],
+    base_floor_by_head: Mapping[str, float | None],
+) -> list[dict]:
+    """A rescued span inside a sign-off region whose confidence sits below its head's normal floor
+    exists only through the sign-off floor. Such a span is kept only when it is name-like
+    (``_name_like``) and overlaps no entity of another type (a company line stays ORG); a kept
+    span carries ``bar`` = that floor, the serve bar the adapter applies to it at the stamped
+    operating point. ``evidence`` stays ``"floor"`` (the API contract's closed set: argmax | floor).
+    Every other entity passes unchanged."""
+    if not regions or not signoff_floor:
+        return entities
+    out: list[dict] = []
+    for ent in entities:
+        head = ent.get("type")
+        if head in signoff_floor and ent.get("evidence") == "floor":
+            s, e = ent["span"]
+            base = base_floor_by_head.get(head)
+            inside = any(rs <= s and e <= re_ for rs, re_ in regions)
+            if inside and (base is None or float(ent.get("confidence", 1.0)) < base):
+                clash = any(
+                    other is not ent and other.get("type") != head
+                    and other["span"][0] < e and s < other["span"][1]
+                    for other in entities
+                )
+                if clash or not _name_like(ent.get("text") or ""):
+                    continue
+                ent = {**ent, "bar": float(signoff_floor[head])}
+        out.append(ent)
+    return out
+
+
 @dataclass(frozen=True)
 class DecoderSettings:
     """The four stampable settings; the default instance is OFF (byte-identical decode)."""
@@ -477,6 +649,7 @@ class DecoderSettings:
     date_span_join: bool = False
     street_number_join: bool = False
     date_identifier_exclusion: bool = False
+    signoff_floor: dict[str, float] = field(default_factory=dict)
 
     @property
     def off(self) -> bool:
@@ -492,6 +665,7 @@ class DecoderSettings:
             or self.date_span_join
             or self.street_number_join
             or self.date_identifier_exclusion
+            or self.signoff_floor
         )
 
     def to_json(self) -> dict:
@@ -521,6 +695,8 @@ class DecoderSettings:
             out["street_number_join"] = True
         if self.date_identifier_exclusion:
             out["date_identifier_exclusion"] = True
+        if self.signoff_floor:
+            out["signoff_floor"] = dict(self.signoff_floor)
         return out
 
     def initials_heads(self, lang: str | None) -> tuple[str, ...]:
@@ -627,8 +803,21 @@ class DecoderSettings:
             id_excl = id_excl.strip().lower() not in _SETTINGS_OFF
         if not isinstance(id_excl, bool | int):
             raise ValueError(f"date_identifier_exclusion must be a boolean, got {id_excl!r}")
+        signoff: dict[str, float] = {}
+        raw_signoff = raw.get("signoff_floor") or {}
+        if not isinstance(raw_signoff, Mapping):
+            raise ValueError(f"signoff_floor must map head -> floor, got {raw_signoff!r}")
+        for head, value in raw_signoff.items():
+            floor = float(value)
+            if not 0.0 < floor < 1.0:
+                raise ValueError(f"signoff_floor[{head!r}] must be in (0, 1), got {value!r}")
+            if str(head).upper() not in _NAME_RULE_HEADS:
+                raise ValueError(
+                    f"signoff_floor: {head!r} is not a name head; allowed: {sorted(_NAME_RULE_HEADS)}"
+                )
+            signoff[str(head).upper()] = floor
         return cls(floors, tuple(strip), gaps, bool(continuity), repair, completion, joins, initials, bool(date_join), bool(street_join),
-                   bool(id_excl))
+                   bool(id_excl), signoff)
 
 
 def _heads_by_lang(raw: object, key: str, allowed: frozenset[str] | None = None) -> dict[str, tuple[str, ...]]:
@@ -733,6 +922,11 @@ def default_decoder_settings(meta: dict | None) -> DecoderSettings:
 def check_settings_heads(settings: DecoderSettings, heads: list[str] | tuple[str, ...]) -> None:
     """A per-head floor on a head the checkpoint does not have is a stamp error — loud."""
     known = set(heads)
+    unknown_signoff = set(settings.signoff_floor) - known
+    if unknown_signoff:
+        raise ValueError(
+            f"signoff_floor names head(s) {sorted(unknown_signoff)} unknown to this checkpoint ({sorted(known)})"
+        )
     for lang, per_head in settings.recall_floor_by_head.items():
         unknown = set(per_head) - known
         if unknown:

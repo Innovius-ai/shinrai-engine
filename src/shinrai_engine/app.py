@@ -370,6 +370,7 @@ def create_app(settings: Settings, registry: dict[str, LoadedModel]) -> FastAPI:
                     threshold=_resolve_threshold(request.threshold, predictor),
                     text=text,
                     merge_persons=request.merge_persons,
+                    signoff_bar=_signoff_bar(request.threshold, predictor),
                 )
                 results.append({"entities": legacy, "stats": text_stats})
             ok = True
@@ -435,6 +436,20 @@ def _resolve_threshold(requested: float | None, predictor) -> float:
     if isinstance(decoder, dict) and isinstance(decoder.get("serve_threshold"), (int, float)):
         return float(decoder["serve_threshold"])
     return 0.7
+
+
+def _signoff_bar(requested: float | None, predictor) -> bool:
+    """Whether a sign-off rescue (decoder key ``signoff_floor``) may pass at its own ``bar``.
+
+    Yes without a request threshold and for one at or below the checkpoint's stamped
+    ``serve_threshold`` (the encryption service always sends the stamped 0.35); no for a
+    stricter request threshold, which then holds for every span. Mirrors
+    ``shinrai_pii.serve.app.signoff_bar_applies`` in shinrai-pii-bert."""
+    if requested is None:
+        return True
+    decoder = (getattr(predictor, "meta", None) or {}).get("decoder")
+    stamped = decoder.get("serve_threshold") if isinstance(decoder, dict) else None
+    return isinstance(stamped, (int, float)) and float(requested) <= float(stamped) + 1e-9
 
 
 def _model_info(
