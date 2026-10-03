@@ -401,7 +401,18 @@ DECODER_SETTING_KEYS = (
     "street_number_join",    # true                   — D-N3: a STREET span takes its adjacent house number («Hauptstraße» 5, 18 «rue des Lilas»)
     "date_identifier_exclusion",  # true              — D-N4: no DATE inside an identifier (ECLI, 2004/17/EC, No 883/2004, C-83/14)
     "signoff_floor",         # {HEAD: floor}          — F001 (v1.6): a lower floor on the 1–2 lines after a closing formula
+    # guard v13 (2026-10-03, research/competitive/decoder-settings/GUARD-V13-2026-10-03.md)
+    "date_day_growth",       # true                   — F014: a DATE span grows left over its day number («.10.2026» -> «15.10.2026»)
+    "date_year_abbrev",      # [lang, ...]            — F002: a DATE span takes the year abbreviation's period («2026 r» -> «2026 r.»)
+    "name_initial_bridge",   # {lang: [PERSON]}       — F011: an initial-only PERSON span grows to its name («A.» -> «John A. Smith»)
+    "name_join_cased",       # {lang: [HEAD, ...]}    — F012: name_join between two capitalised pieces only («Marana» + «Aurinete Brito»)
+    "signoff_shapes",        # [shape, ...]           — F015: more sign-off regions (same_line, trailing_formula, name_before_closing)
+    "person_full_span",      # true                   — F016: a multi-word PERSON span is typed as a full name by the adapter
+    "age_span_repair",       # true                   — F021: AGE fragments join and grow over their number and unit («5» + «anos» -> «58 anos»)
 )
+# recall_floor_by_head: the language-independent default (F013, guard v13). Used when the call names no
+# language, or a language the stamp has no entry for (exact key and primary subtag both missing).
+DEFAULT_LANG_KEY = "*"
 _SETTINGS_OFF = ("", "off", "none", "no", "0", "false", "{}")
 
 # Rule d, taskb_model_probe.py JA_PARTICLES verbatim (results/decode-rules-ja-2026-09-07.json):
@@ -524,10 +535,18 @@ def _is_closing_formula(line: str) -> bool:
     return any(core.startswith(prefix) for prefix in CLOSING_PREFIXES)
 
 
-def signoff_regions(text: str) -> list[tuple[int, int]]:
+def signoff_regions(text: str, shapes: tuple[str, ...] | list[str] = ()) -> list[tuple[int, int]]:
     """Character ranges of the 1–2 short non-empty lines that follow a closing-formula line
     (up to ``SIGNOFF_MAX_BLANK`` blank lines in between). The decoder lowers the floor of the
-    ``signoff_floor`` heads inside these ranges only; everything else decodes unchanged."""
+    ``signoff_floor`` heads inside these ranges only; everything else decodes unchanged.
+
+    ``shapes`` (guard v13, F015; empty = the guard v12 regions, byte-identical) adds:
+    ``same_line`` — the rest of a line that starts with a formula («Kind regards, Jane Doe»);
+    ``trailing_formula`` — a formula that ends a prose line («… 45 67. Saygılarımla,») opens the
+    region on the next lines like a formula line; ``name_before_closing`` — the name before a
+    trailing closing word on a short line («홍길동 드림», «김철수 올림»)."""
+    if shapes:
+        return _signoff_regions_shaped(text, tuple(shapes))
     if not text or "\n" not in text:
         return []
     lines: list[tuple[int, int]] = []
@@ -558,6 +577,119 @@ def signoff_regions(text: str) -> list[tuple[int, int]]:
             taken += 1
             j += 1
     return regions
+
+
+SIGNOFF_SHAPES = ("same_line", "trailing_formula", "name_before_closing")
+# closing words written AFTER the name on the same line (ko: «홍길동 드림» "offered by", «올림» "presented by»,
+# «배상» "respectfully"); the name is the part of the line before the word
+CLOSING_WORDS_AFTER_NAME: tuple[str, ...] = ("드림", "올림", "배상")
+SIGNOFF_SAME_LINE_MAX_WORDS = 5
+# one-word formulas that also start ordinary sentences or names («Best Buy», «LG Electronics»): never a same-line sign-off
+SAME_LINE_SKIP = frozenset({"best", "lg", "vg", "mfg"})
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
+_FORMULAS_LONGEST_FIRST = tuple(sorted(_CLOSING_SET, key=lambda f: len(f.casefold()), reverse=True))
+
+
+def _lines(text: str) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    pos = 0
+    for raw in text.split("\n"):
+        out.append((pos, pos + len(raw)))
+        pos += len(raw) + 1
+    return out
+
+
+def _trailing_formula(line: str) -> bool:
+    """The last sentence of a prose line is a closing formula («Telefon: 0532 123 45 67. Saygılarımla,»)."""
+    parts = _SENTENCE_SPLIT.split(line.strip())
+    return len(parts) > 1 and _is_closing_formula(parts[-1])
+
+
+def _same_line_rest(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """The name part of «<formula>[,] <name>» on one line: at most ``SIGNOFF_SAME_LINE_MAX_WORDS`` words, its first
+    letter not lower-case, no sentence punctuation inside. ``None`` when the line has no such shape."""
+    line = text[start:end]
+    lead = len(line) - len(line.lstrip())
+    folded = line[lead:].casefold()
+    for formula in _FORMULAS_LONGEST_FIRST:
+        key = formula.casefold()
+        if not folded.startswith(key):
+            continue
+        if formula in SAME_LINE_SKIP:
+            return None
+        # casefold can change the length («ß» -> «ss», «İ» -> «i̇»): find the original prefix that folds to the formula
+        size = next((k for k in range(max(1, len(key) - 3), len(key) + 3)
+                     if line[lead:lead + k].casefold() == key), None)
+        if size is None:
+            return None
+        rest_at = lead + size
+        m = re.match(r"\s*[,;:\-–—]?\s+|\s*[,;:\-–—]\s*", line[rest_at:])
+        if not m:
+            return None                      # the formula runs into a longer word («bestellen»)
+        if not re.search(r"[,;:\-–—]", m.group(0)) and " " not in formula:
+            return None                      # a one-word formula needs its comma / dash («Thanks, Anna»)
+        rs = rest_at + m.end()
+        body = line[rs:].rstrip().rstrip(_TRAILING_PUNCT).rstrip()
+        if not body or len(body) > SIGNOFF_MAX_LINE_CHARS or len(body.split()) > SIGNOFF_SAME_LINE_MAX_WORDS:
+            return None
+        first = next((ch for ch in body if ch.isalpha()), "")
+        if not first or first.islower() or re.search(r"[.!?。！？]\s", body):
+            return None
+        return (start + rs, start + rs + len(body))
+    return None
+
+
+def _before_closing_word(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """«홍길동 드림» -> the range of «홍길동»: a short line that ends in a closing word after whitespace."""
+    line = text[start:end].rstrip()
+    for word in CLOSING_WORDS_AFTER_NAME:
+        if line.endswith(word) and len(line) > len(word) and line[-len(word) - 1].isspace():
+            body = line[: -len(word)].rstrip()
+            lead = len(body) - len(body.lstrip())
+            body = body.strip()
+            if body and len(body) <= SIGNOFF_MAX_LINE_CHARS and len(body.split()) <= SIGNOFF_SAME_LINE_MAX_WORDS:
+                return (start + lead, start + lead + len(body))
+    return None
+
+
+def _signoff_regions_shaped(text: str, shapes: tuple[str, ...]) -> list[tuple[int, int]]:
+    """``signoff_regions`` with the guard v13 shapes on; the guard v12 regions are always part of the result."""
+    if not text:
+        return []
+    lines = _lines(text)
+    regions: list[tuple[int, int]] = []
+    for i, (start, end) in enumerate(lines):
+        line = text[start:end]
+        opens = _is_closing_formula(line) or ("trailing_formula" in shapes and _trailing_formula(line))
+        if "same_line" in shapes:
+            rest = _same_line_rest(text, start, end)
+            if rest is not None:
+                regions.append(rest)
+        if "name_before_closing" in shapes:
+            name = _before_closing_word(text, start, end)
+            if name is not None:
+                regions.append(name)
+        if not opens:
+            continue
+        j, blanks, taken = i + 1, 0, 0
+        while j < len(lines) and taken < SIGNOFF_MAX_LINES:
+            ls, le = lines[j]
+            body = text[ls:le]
+            if not body.strip():
+                if taken:
+                    break
+                blanks += 1
+                if blanks > SIGNOFF_MAX_BLANK:
+                    break
+                j += 1
+                continue
+            if len(body.strip()) > SIGNOFF_MAX_LINE_CHARS or _is_closing_formula(body):
+                break
+            lead = len(body) - len(body.lstrip())
+            regions.append((ls + lead, le - (len(body) - len(body.rstrip()))))
+            taken += 1
+            j += 1
+    return sorted(set(regions))
 
 
 def token_floors(
@@ -650,6 +782,13 @@ class DecoderSettings:
     street_number_join: bool = False
     date_identifier_exclusion: bool = False
     signoff_floor: dict[str, float] = field(default_factory=dict)
+    date_day_growth: bool = False
+    date_year_abbrev: tuple[str, ...] = ()
+    name_initial_bridge: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    name_join_cased: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    signoff_shapes: tuple[str, ...] = ()
+    person_full_span: bool = False
+    age_span_repair: bool = False
 
     @property
     def off(self) -> bool:
@@ -666,6 +805,13 @@ class DecoderSettings:
             or self.street_number_join
             or self.date_identifier_exclusion
             or self.signoff_floor
+            or self.date_day_growth
+            or self.date_year_abbrev
+            or self.name_initial_bridge
+            or self.name_join_cased
+            or self.signoff_shapes
+            or self.person_full_span
+            or self.age_span_repair
         )
 
     def to_json(self) -> dict:
@@ -697,6 +843,20 @@ class DecoderSettings:
             out["date_identifier_exclusion"] = True
         if self.signoff_floor:
             out["signoff_floor"] = dict(self.signoff_floor)
+        if self.date_day_growth:
+            out["date_day_growth"] = True
+        if self.date_year_abbrev:
+            out["date_year_abbrev"] = list(self.date_year_abbrev)
+        if self.name_initial_bridge:
+            out["name_initial_bridge"] = {lang: list(heads) for lang, heads in self.name_initial_bridge.items()}
+        if self.name_join_cased:
+            out["name_join_cased"] = {lang: list(heads) for lang, heads in self.name_join_cased.items()}
+        if self.signoff_shapes:
+            out["signoff_shapes"] = list(self.signoff_shapes)
+        if self.person_full_span:
+            out["person_full_span"] = True
+        if self.age_span_repair:
+            out["age_span_repair"] = True
         return out
 
     def initials_heads(self, lang: str | None) -> tuple[str, ...]:
@@ -709,7 +869,30 @@ class DecoderSettings:
         return tuple(_lookup(self.name_join, lang) or ())
 
     def head_floors(self, lang: str | None) -> dict[str, float]:
-        return dict(_lookup(self.recall_floor_by_head, lang) or {})
+        """Per-head floors for ``lang``: the exact key, then the primary subtag (``pt-br`` -> ``pt``), then the
+        language-independent default ``"*"`` (guard v13, F013) when the stamp has one. Without a ``"*"`` key a call
+        with no language or an unknown language gets no per-head floor (byte-identical to guard v12)."""
+        found = _lookup(self.recall_floor_by_head, lang)
+        if found is None:
+            found = self.recall_floor_by_head.get(DEFAULT_LANG_KEY)
+        return dict(found or {})
+
+    def bridged_heads(self, lang: str | None) -> tuple[str, ...]:
+        return tuple(_lookup(self.name_initial_bridge, lang) or ())
+
+    def cased_joined_heads(self, lang: str | None) -> tuple[str, ...]:
+        return tuple(_lookup(self.name_join_cased, lang) or ())
+
+    def year_abbrev(self, lang: str | None) -> str | None:
+        """The year abbreviation of ``lang`` when ``date_year_abbrev`` names it (exact key or primary subtag)."""
+        key = lang_key(lang)
+        if key is None:
+            return None
+        primary = key.split("-", 1)[0]
+        for k in (key, primary):
+            if k in self.date_year_abbrev:
+                return YEAR_ABBREVIATIONS[k]
+        return None
 
     def strips_particles(self, lang: str | None) -> bool:
         key = lang_key(lang)
@@ -816,8 +999,47 @@ class DecoderSettings:
                     f"signoff_floor: {head!r} is not a name head; allowed: {sorted(_NAME_RULE_HEADS)}"
                 )
             signoff[str(head).upper()] = floor
+        day_growth = _flag(raw, "date_day_growth")
+        abbrev_raw = raw.get("date_year_abbrev") or ()
+        if isinstance(abbrev_raw, str):
+            abbrev_raw = [part for part in abbrev_raw.split(",") if part.strip()]
+        abbrev: list[str] = []
+        for lang in abbrev_raw:
+            key = lang_key(lang)
+            if key not in YEAR_ABBREVIATIONS:
+                raise ValueError(
+                    f"date_year_abbrev: no year abbreviation for {lang!r}; tables exist for {sorted(YEAR_ABBREVIATIONS)}"
+                )
+            if key not in abbrev:
+                abbrev.append(key)
+        bridge = _heads_by_lang(raw.get("name_initial_bridge"), "name_initial_bridge", frozenset({"PERSON"}))
+        cased_joins = _heads_by_lang(raw.get("name_join_cased"), "name_join_cased")
+        shapes_raw = raw.get("signoff_shapes") or ()
+        if isinstance(shapes_raw, str):
+            shapes_raw = [part for part in shapes_raw.split(",") if part.strip()]
+        shapes: list[str] = []
+        for shape in shapes_raw:
+            name = str(shape).strip().lower()
+            if name not in SIGNOFF_SHAPES:
+                raise ValueError(f"signoff_shapes: unknown shape {shape!r}; known: {SIGNOFF_SHAPES}")
+            if name not in shapes:
+                shapes.append(name)
+        if shapes and not signoff:
+            raise ValueError("signoff_shapes need signoff_floor: the shapes only add regions to the sign-off floor")
+        full_span = _flag(raw, "person_full_span")
+        age_repair = _flag(raw, "age_span_repair")
         return cls(floors, tuple(strip), gaps, bool(continuity), repair, completion, joins, initials, bool(date_join), bool(street_join),
-                   bool(id_excl), signoff)
+                   bool(id_excl), signoff, day_growth, tuple(abbrev), bridge, cased_joins, tuple(shapes), full_span, age_repair)
+
+
+def _flag(raw: Mapping, key: str) -> bool:
+    """A boolean settings key: true / false, or an on / off word. Loud on anything else."""
+    value = raw.get(key, False)
+    if isinstance(value, str):
+        value = value.strip().lower() not in _SETTINGS_OFF
+    if not isinstance(value, bool | int):
+        raise ValueError(f"{key} must be a boolean, got {value!r}")
+    return bool(value)
 
 
 def _heads_by_lang(raw: object, key: str, allowed: frozenset[str] | None = None) -> dict[str, tuple[str, ...]]:
@@ -1159,11 +1381,19 @@ def absorb_initials(entities: list[dict], text: str, heads: tuple[str, ...]) -> 
     return out
 
 
-def join_name_spans(entities: list[dict], text: str, heads: tuple[str, ...]) -> list[dict]:
+def _starts_upper(surface: str) -> bool:
+    first = next((ch for ch in surface if ch.isalpha()), "")
+    return bool(first) and first.isupper()
+
+
+def join_name_spans(entities: list[dict], text: str, heads: tuple[str, ...], cased: bool = False) -> list[dict]:
     """N2 name join: two consecutive spans of the same listed head whose gap is whitespace
     plus at most one connector (initials, hyphen, one capitalised token) become one span.
     The gap must contain at least one whitespace or hyphen character — an empty gap is the
-    sub-word class of ``join_split_spans`` and stays with that rule."""
+    sub-word class of ``join_split_spans`` and stays with that rule.
+
+    ``cased`` (guard v13 ``name_join_cased``, F012): both pieces must start with an upper-case letter, so a
+    lower-case title the model tagged on its own («general», «rei», «imperador» before a name) is never joined."""
     if len(entities) < 2 or not heads:
         return entities
     ordered = sorted((dict(e) for e in entities), key=lambda e: (e["span"][0], e["span"][1]))
@@ -1178,6 +1408,7 @@ def join_name_spans(entities: list[dict], text: str, heads: tuple[str, ...]) -> 
                 and (gap != connector or connector in "-‐‑–")
                 and _NAME_GAP.match(gap)
                 and (not connector or not connector[0].islower())
+                and (not cased or (_starts_upper(a["text"]) and _starts_upper(e["text"])))
             ):
                 a["span"] = [a["span"][0], e["span"][1]]
                 a["text"] = text[a["span"][0] : a["span"][1]]
@@ -1399,6 +1630,235 @@ def join_street_numbers(entities: list[dict], text: str) -> list[dict]:
     return sorted(rest + merged, key=lambda e: tuple(e["span"]))
 
 
+# --- guard v13 (2026-10-03): F014 day growth, F002 year abbreviation, F011 initial bridge, F016 full-name type ------
+# F014: with the 0.99 DATE floor (argmax only) the day token of «am 15.10.2026» can stay O: DATE «.10.2026». The span
+# grows left over the 1-2 digit day when the result is a numeric date with valid day / month values.
+_NUMERIC_DATE = re.compile(r"^(\d{1,2})([./-])(\d{1,2})\2(\d{4}|\d{2})$")
+_DAY_BEFORE_SEP = re.compile(r"(?<![\w.,/:-])\d{1,2}$")          # «15» before «.10.2026»
+_DAY_SEP_BEFORE_DIGIT = re.compile(r"(?<![\w.,/:-])\d{1,2}[./-]$")   # «15.» before «10.2026»
+
+
+def _valid_numeric_date(surface: str) -> bool:
+    m = _NUMERIC_DATE.match(surface)
+    if not m:
+        return False
+    a, b = int(m.group(1)), int(m.group(3))
+    return (1 <= a <= 31 and 1 <= b <= 12) or (1 <= a <= 12 and 1 <= b <= 31)
+
+
+def grow_date_day_left(entities: list[dict], text: str) -> list[dict]:
+    """F014: a DATE span that starts at a date separator («.10.2026») or right after one («10.2026» after «15.»)
+    grows left over the day number when the grown surface is a valid numeric date. Overlapping DATE spans merge."""
+    mine = sorted((dict(e) for e in entities if e.get("type") == "DATE"), key=lambda e: tuple(e["span"]))
+    if not mine:
+        return entities
+    for e in mine:
+        s, t = e["span"]
+        if s <= 0:
+            continue
+        if text[s] in "./-":
+            m = _DAY_BEFORE_SEP.search(text[max(0, s - 3):s])
+        elif text[s].isdigit() and text[s - 1] in "./-":
+            m = _DAY_SEP_BEFORE_DIGIT.search(text[max(0, s - 4):s])
+        else:
+            m = None
+        if not m:
+            continue
+        ns = s - len(m.group(0))
+        if _valid_numeric_date(text[ns:t]):
+            e["span"] = [ns, t]
+            e["text"] = text[ns:t]
+    merged: list[dict] = []
+    for e in mine:
+        if merged and e["span"][0] < merged[-1]["span"][1]:
+            prev = merged[-1]
+            prev["span"] = [prev["span"][0], max(prev["span"][1], e["span"][1])]
+            prev["text"] = text[prev["span"][0]:prev["span"][1]]
+            prev["confidence"] = max(prev.get("confidence", 0.0), e.get("confidence", 0.0))
+            continue
+        merged.append(e)
+    rest = [e for e in entities if e.get("type") != "DATE"]
+    return sorted(rest + merged, key=lambda e: tuple(e["span"]))
+
+
+# F002: Polish writes «12 marca 2026 r.»; the gold takes the abbreviation with its period. The model ends the span at
+# «r» or at the year. ru «г.» and uk «р.» have the same shape (tables kept for a later measurement).
+YEAR_ABBREVIATIONS: dict[str, str] = {"pl": "r", "ru": "г", "uk": "р"}
+
+
+def complete_year_abbrev(entities: list[dict], text: str, abbrev: str) -> list[dict]:
+    """F002: a DATE span ending in the year abbreviation («… 2026 r») takes the period right after it; a DATE span
+    ending in a 4-digit year followed by « r.» takes « r.». The period must not start a number («r.5»)."""
+    after_abbrev = re.compile(r"(?<=[\s\d])" + re.escape(abbrev) + r"$")
+    after_year = re.compile(r"^\s?" + re.escape(abbrev) + r"\.(?![^\W_])")
+    out: list[dict] = []
+    for e in entities:
+        if e.get("type") == "DATE":
+            s, t = e["span"]
+            surface = text[s:t]
+            nt = t
+            if after_abbrev.search(surface) and text[t:t + 1] == "." and not text[t + 1:t + 2].isalnum():
+                nt = t + 1
+            elif re.search(r"(?<!\d)\d{4}$", surface):
+                m = after_year.match(text[t:t + 4])
+                if m:
+                    nt = t + m.end()
+            if nt != t:
+                e = {**e, "span": [s, nt], "text": text[s:nt]}
+        out.append(e)
+    return out
+
+
+# F011: «John A. Smith» decodes PERSON «A.» only (John 0.09, Smith 0.05 entity mass): the floor cannot reach the name,
+# but a PERSON span that is nothing but initials names a person whose given name and surname are its neighbours.
+_ONLY_INITIALS = re.compile(r"^(?:[^\W\d_]\.\s*){1,3}$")
+_CAP_WORD_LEFT = re.compile(r"(?<![^\W\d_])([^\W\d_][^\W\d_'’-]{1,29})[ \t ]{1,2}$")
+# capitalised words that sit next to a name but are not part of it: titles, greetings, sentence starters (en fr es it pt de)
+BRIDGE_STOPWORDS = frozenset("""
+mr mrs ms miss dr prof sir madam dear hi hello hey contact please thanks thank call email ask from to for by with
+the this that these those and or but if when on in at of per via cc attn re fw fwd regards
+herr frau hallo liebe lieber sehr von an mit und der die das
+m mme mlle monsieur madame cher chère bonjour merci pour par avec le la les et de du des
+sr sra srta don doña señor señora estimado estimada hola gracias para por con el los las y del
+sig signor signora dott dottor dottoressa gentile caro cara ciao grazie il lo gli e di da
+senhor senhora prezado prezada olá obrigado obrigada o os ou do da dos das em no na
+""".split())
+_CAP_WORD_RIGHT = re.compile(r"^[ \t ]{1,2}([^\W\d_][^\W\d_'’]{1,29}(?:-[^\W\d_][^\W\d_'’]{1,29})?)(?![^\W\d_])")
+
+
+def bridge_initials(entities: list[dict], text: str, heads: tuple[str, ...]) -> list[dict]:
+    """F011: a span of a listed head that consists only of initials («A.», «J. R.») grows right over one capitalised
+    word (the surname) and, when present, left over one capitalised word (the given name). Both neighbours must start
+    with an upper-case letter, must sit on the same line, must not be a title, greeting or sentence starter
+    (``BRIDGE_STOPWORDS``) and must not lie inside any other predicted span. Without a right neighbour the span stays
+    as it is."""
+    if not entities or not heads:
+        return entities
+    out: list[dict] = []
+    for e in entities:
+        if e.get("type") in heads and _ONLY_INITIALS.match(e.get("text") or text[e["span"][0]:e["span"][1]]):
+            s, t = e["span"]
+            right = _CAP_WORD_RIGHT.match(text[t:t + 64])
+            if right and right.group(1)[0].isupper() and right.group(1).casefold() not in BRIDGE_STOPWORDS:
+                nt = t + right.end()
+                ns = s
+                left = _CAP_WORD_LEFT.search(text[max(0, s - 32):s])
+                if left and left.group(1)[0].isupper() and left.group(1).casefold() not in BRIDGE_STOPWORDS:
+                    ns = max(0, s - 32) + left.start(1)
+                # the bridge only fills words the model left O: a neighbour inside any other span («M.» + PERSON
+                # «Chauvel», a CITY) is never taken; joining two existing spans is name_join's job
+                clash = any(
+                    o is not e and o["span"][0] < nt and ns < o["span"][1]
+                    for o in entities
+                )
+                if not clash:
+                    e = {**e, "span": [ns, nt], "text": text[ns:nt]}
+        out.append(e)
+    out.sort(key=lambda x: (x["span"][0], x["span"][1]))
+    merged: list[dict] = []
+    for e in out:                             # a grown span may now cover a sibling piece of the same name
+        a = merged[-1] if merged else None
+        if a and a["type"] == e["type"] and e["type"] in heads and e["span"][0] < a["span"][1]:
+            a["span"] = [a["span"][0], max(a["span"][1], e["span"][1])]
+            a["text"] = text[a["span"][0]:a["span"][1]]
+            a["confidence"] = max(a.get("confidence", 0.0), e.get("confidence", 0.0))
+            continue
+        merged.append(dict(e))
+    return merged
+
+
+# F016: the adapter types a PERSON span from the name_part attribute head; «Jan Kowalski» / «דוד לוי» come out SURNAME.
+# A span of two or more words is a full name whatever the attribute says: the decoder marks it, the adapter maps it to
+# the ``full`` API type (PERSON).
+FULL_NAME_SHAPE = "full"
+
+
+def mark_full_person_spans(entities: list[dict], text: str) -> list[dict]:
+    """F016: every PERSON span with at least two whitespace-separated words that contain a letter gets
+    ``name_shape: "full"``. No other change."""
+    out: list[dict] = []
+    for e in entities:
+        if e.get("type") == "PERSON":
+            surface = e.get("text") or text[e["span"][0]:e["span"][1]]
+            if sum(1 for part in surface.split() if any(ch.isalpha() for ch in part)) >= 2:
+                e = {**e, "name_shape": FULL_NAME_SHAPE}
+        out.append(e)
+    return out
+
+
+# F021 (guard v13): under the 0.99 AGE floor (argmax only) the AGE head splits an age into number and unit pieces
+# («58 anos» -> «anos» + «5», «7 meses» -> «meses», «54 anos» -> nothing); the 0.35 floor used to rescue the whole span.
+# The gold convention of every AGE instrument is number + unit («59 anos», «34-year-old», «45-jähriger», «45 lat»,
+# «35 years»); «old» / «alt» stay outside (the 27-prompt gold has «49 years» before «old»). Number words («trente-sept
+# ans») are not covered. Units are written in the language of the text, so the table is one list for every locale.
+AGE_UNITS = (
+    # adjectival forms keep their inflection (word tail)
+    r"years?-old", r"months?-old", r"weeks?-old", r"jährig\w*", r"monatig\w*", r"letni\w*", r"miesięczn\w*",
+    r"летн\w*", r"річн\w*", r"місячн\w*",
+    # pt es it fr de en pl ru uk tr ar he
+    r"anos", r"ano", r"meses", r"mês", r"dias", r"dia", r"semanas", r"semana",
+    r"años", r"año", r"días", r"día",
+    r"anni", r"anno", r"mesi", r"mese", r"giorni", r"settimane",
+    r"ans", r"mois", r"jours", r"semaines",    # not «an»: the German preposition («mit 57 an Pankreaskarzinom»)
+    r"jahren", r"jahre", r"jahr", r"monaten", r"monate", r"wochen", r"tagen", r"tage",
+    r"years", r"year", r"yrs", r"yr", r"y/o", r"months", r"month", r"weeks", r"days",
+    r"lat", r"lata", r"miesięcy", r"miesiące", r"miesiąc", r"tygodni", r"dni",
+    r"лет", r"года", r"год", r"месяцев", r"месяца", r"месяц", r"недель", r"недели",
+    r"років", r"роки", r"рік", r"місяців", r"місяці", r"місяць", r"тижнів",
+    r"yaşındaki", r"yaşında", r"yaşlarında", r"yaş", r"aylık", r"haftalık",
+    r"عامًا", r"عاماً", r"عاما", r"عام", r"سنة", r"سنوات", r"أعوام", r"شهرا", r"أشهر",
+    r"שנים", r"שנה", r"חודשים",
+)
+AGE_UNITS_CJK = (r"歳", r"才", r"ヶ月", r"か月", r"カ月", r"세", r"살", r"개월")
+_AGE_UNIT = "(?:" + "|".join(sorted(AGE_UNITS, key=len, reverse=True)) + ")(?![^\\W\\d_])"
+_AGE_UNIT_CJK = "(?:" + "|".join(AGE_UNITS_CJK) + ")"
+_AGE_UNIT_AFTER_NUMBER = re.compile(r"(?i)^(?:[ \u00a0-]?" + _AGE_UNIT + "|" + _AGE_UNIT_CJK + ")")
+_AGE_UNIT_START = re.compile(r"(?i)^(?:" + _AGE_UNIT + "|" + _AGE_UNIT_CJK + ")")
+_AGE_NUMBER_BEFORE = re.compile(r"(?<![\d.,/:])\d{1,3}[ \u00a0-]?$")
+_AGE_GAP = re.compile(r"^[ \u00a0-]?$")
+
+
+def repair_age_spans(entities: list[dict], text: str) -> list[dict]:
+    """F021: every AGE span grows over the digits it cuts («5» of «58»), a number span grows right over an adjacent
+    unit («58» + « anos», «34» + «-year-old», «45» + «歳»), a unit span grows left over an adjacent 1-3 digit number
+    («anos» -> «58 anos»), and AGE spans whose gap is empty, one space or one hyphen join («13» + «-15 lat»). Other
+    heads pass through. Overlapping AGE spans merge (confidence = max)."""
+    mine = sorted((dict(e) for e in entities if e.get("type") == "AGE"), key=lambda e: tuple(e["span"]))
+    if not mine:
+        return entities
+    for e in mine:
+        s, t = e["span"]
+        while s > 0 and s < len(text) and text[s - 1].isdigit() and text[s].isdigit():
+            s -= 1
+        while 0 < t < len(text) and text[t].isdigit() and text[t - 1].isdigit():
+            t += 1
+        if text[t - 1:t].isdigit():
+            m = _AGE_UNIT_AFTER_NUMBER.match(text[t:t + 24])
+            if m:
+                t += m.end()
+        if _AGE_UNIT_START.match(text[s:t]):
+            m = _AGE_NUMBER_BEFORE.search(text[max(0, s - 5):s])
+            if m:
+                s = max(0, s - 5) + m.start()
+        e["span"] = [s, t]
+        e["text"] = text[s:t]
+    mine.sort(key=lambda e: tuple(e["span"]))
+    merged: list[dict] = []
+    for e in mine:
+        if merged and (e["span"][0] < merged[-1]["span"][1]
+                       or _AGE_GAP.match(text[merged[-1]["span"][1]:e["span"][0]])):
+            prev = merged[-1]
+            prev["span"] = [prev["span"][0], max(prev["span"][1], e["span"][1])]
+            prev["text"] = text[prev["span"][0]:prev["span"][1]]
+            prev["confidence"] = max(prev.get("confidence", 0.0), e.get("confidence", 0.0))
+            if e.get("evidence") == "floor":
+                prev["evidence"] = "floor"
+            continue
+        merged.append(e)
+    rest = [e for e in entities if e.get("type") != "AGE"]
+    return sorted(rest + merged, key=lambda e: tuple(e["span"]))
+
+
 def apply_decoder_settings(
     entities: list[dict], text: str, lang: str | None, settings: DecoderSettings
 ) -> list[dict]:
@@ -1418,17 +1878,32 @@ def apply_decoder_settings(
     joined = settings.joined_heads(lang)
     if joined:
         out = join_name_spans(out, text, joined)
+    cased_joined = settings.cased_joined_heads(lang)
+    if cased_joined:
+        out = join_name_spans(out, text, cased_joined, cased=True)
     initials = settings.initials_heads(lang)
     if initials:
         out = absorb_initials(out, text, initials)
+    bridged = settings.bridged_heads(lang)
+    if bridged:
+        out = bridge_initials(out, text, bridged)
     for head in settings.numeric_span_repair:
         out = repair_numeric_spans(out, text, head)
     if settings.date_span_join:
         out = join_date_spans(out, text)
+    if settings.date_day_growth:
+        out = grow_date_day_left(out, text)
+    abbrev = settings.year_abbrev(lang)
+    if abbrev:
+        out = complete_year_abbrev(out, text, abbrev)
     if settings.date_identifier_exclusion:
         out = drop_identifier_dates(out, text)
+    if settings.age_span_repair:
+        out = repair_age_spans(out, text)
     if settings.street_number_join:
         out = join_street_numbers(out, text)
     if settings.strips_particles(lang):
         out = strip_particles(out, text, lang)
+    if settings.person_full_span:
+        out = mark_full_person_spans(out, text)
     return out

@@ -100,6 +100,11 @@ def to_legacy_entities(
     for ent in entities:
         confidence = float(ent.get("confidence", 1.0))
         attrs = ent.get("attrs") or {}
+        # F016 (guard v13, decoder key ``person_full_span``): the decoder marks a multi-word PERSON span
+        # ``name_shape: "full"``; it is a full name whatever the name_part head says («Jan Kowalski» was SURNAME).
+        # Unmarked spans (the key off) keep the name_part typing byte-identically.
+        if ent["type"] == "PERSON" and ent.get("name_shape") == "full" and attrs.get("name_part") != "full":
+            attrs = {**attrs, "name_part": "full"}
         api_type = label_space.api_type(ent["type"], attrs.get("name_part"))
         item = {
             "text": ent["text"],

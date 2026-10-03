@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.8 — 2026-10-03
+
+- Runtime re-vendored from shinrai-pii-bert
+  `d3d11b41864b690fa0ef223a5a2d0cd0c29ad6d9`: the decoder keys of guard v13.
+  Each key is off by default; without it the decode is unchanged.
+  - `recall_floor_by_head` accepts `"*"`, the floors for a call with no
+    language or a language without an entry.
+  - `date_day_growth`: a date that starts at a separator takes its day
+    ("15.10.2026", not ".10.2026").
+  - `date_year_abbrev`: Polish "r." after a year.
+  - `name_initial_bridge`, `name_join_cased`: initials and cased name pieces
+    join into one name ("John A. Smith").
+  - `signoff_shapes`: sign-off regions for a same-line name and a formula at
+    the end of a prose line.
+  - `person_full_span`: a multi-word PERSON span is typed as a full name.
+  - `age_span_repair`: an age keeps its number and its unit ("58 anos").
+
 ## 0.1.7 — 2026-10-02
 
 - Runtime re-vendored from shinrai-pii-bert

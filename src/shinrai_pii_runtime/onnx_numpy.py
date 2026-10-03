@@ -238,7 +238,7 @@ class NumpyOnnxPredictor:
                 confidences: dict[str, list[float]] = {}
                 rescued: dict[str, list[bool]] = {}
                 token_offsets = [tuple(o) for o in offsets[window_i].tolist()]
-                regions = signoff_regions(text) if settings.signoff_floor else []
+                regions = signoff_regions(text, settings.signoff_shapes) if settings.signoff_floor else []
                 for head in self.heads:
                     logits = named[f"logits_{head.lower()}"][local_i]
                     temp = float(self.temperatures.get(head, 1.0)) or 1.0
