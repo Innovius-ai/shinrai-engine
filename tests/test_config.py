@@ -18,6 +18,31 @@ def test_defaults():
     assert settings.self_test == "warn"
 
 
+def test_the_highest_version_is_the_default_wherever_it_is_listed():
+    settings = load_settings({"SHINRAI_MODELS": "v1.3=/m/v1.3,v1.10=/m/v1.10,v1.6=/m/v1.6"})
+    assert settings.default_model == "v1.10"
+
+
+def test_default_model_can_be_pinned():
+    settings = load_settings(
+        {"SHINRAI_MODELS": "v1.5=/m/v1.5,v1.6=/m/v1.6", "SHINRAI_DEFAULT_MODEL": "v1.5"}
+    )
+    assert settings.default_model == "v1.5"
+    with pytest.raises(ConfigError):
+        load_settings({"SHINRAI_MODELS": "v1.6=/m/v1.6", "SHINRAI_DEFAULT_MODEL": "v9.9"})
+
+
+def test_the_default_model_cannot_be_lazy():
+    with pytest.raises(ConfigError):
+        load_settings(
+            {"SHINRAI_MODELS": "v1.3=/m/v1.3,v1.6=/m/v1.6", "SHINRAI_LAZY_MODELS": "v1.6"}
+        )
+    settings = load_settings(
+        {"SHINRAI_MODELS": "v1.3=/m/v1.3,v1.6=/m/v1.6", "SHINRAI_LAZY_MODELS": "v1.3"}
+    )
+    assert settings.default_model == "v1.6"
+
+
 def test_parse_model_specs():
     assert parse_model_specs("a=/x, b=hf://o/r") == [("a", "/x"), ("b", "hf://o/r")]
     with pytest.raises(ConfigError):

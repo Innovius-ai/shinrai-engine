@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5 — 2026-10-11
+
+- The default model is the highest version in `SHINRAI_MODELS` (`v1.10` >
+  `v1.9`), wherever it is listed; it was the first entry. A deployment that
+  lists its newest model first sees no change. `SHINRAI_DEFAULT_MODEL` (or
+  `--default-model`) pins another listed model. The default model still cannot
+  be lazy.
+- README: v1.1 and v1.2 are public under Apache-2.0 at
+  `innovius/shinrai-pii-m-v1.1` and `innovius/shinrai-pii-m-v1.2`.
+- Package version strings agree again (`__version__` lagged at 0.1.3).
+
 ## 0.1.4 — 2026-09-11
 
 - Added retained-model lifecycle controls: entries named in

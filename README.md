@@ -95,12 +95,14 @@ macro-F1 below fp32 on spot checks and is gated behind an explicit opt-in.
 The precision is detected from the actual graph (a binary scan for
 quantized ops), not just the filename — a mislabeled file warns.
 
-**Models.** `v1.1` ([public](https://huggingface.co/innovius/shinrai-pii-pathfinder-m-v1.1),
-de/en/ja, 512-token window) is the default. `v1.2` (de/en/it/fr/es/pl,
-1024-token window, ja stays on v1.1) is currently a private repo — set
-`HF_TOKEN` and `SHINRAI_MODELS=v1.2=hf://innovius/shinrai-pii-pathfinder-m-v1.2`
-once you have access. Entity heads: PERSON, CITY, STREET, ORG, plus span
-attributes (origin, gender expression, name part).
+**Models.** `v1.1` ([public](https://huggingface.co/innovius/shinrai-pii-m-v1.1),
+Apache-2.0, de/en/ja, 512-token window) is the out-of-the-box model. `v1.2`
+([public](https://huggingface.co/innovius/shinrai-pii-m-v1.2), Apache-2.0,
+de/en/it/fr/es/pl, 1024-token window, ja stays on v1.1) runs beside it with
+`SHINRAI_MODELS=v1.1=hf://innovius/shinrai-pii-m-v1.1,v1.2=hf://innovius/shinrai-pii-m-v1.2`;
+the highest listed version answers requests that name no model. Entity heads:
+PERSON, CITY, STREET, ORG, plus span attributes (origin, gender expression,
+name part).
 
 ## Configuration
 
@@ -108,7 +110,8 @@ Everything is an env var:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SHINRAI_MODELS` | `v1.1=hf://innovius/shinrai-pii-pathfinder-m-v1.1` | Comma-separated `name=source`; source is a bundle dir or `hf://org/repo[@rev]`. First = default model. |
+| `SHINRAI_MODELS` | `v1.1=hf://innovius/shinrai-pii-pathfinder-m-v1.1` | Comma-separated `name=source`; source is a bundle dir or `hf://org/repo[@rev]`. The highest version (`v1.10` > `v1.9`) is the default model. |
+| `SHINRAI_DEFAULT_MODEL` | – | Pins the default model to one `SHINRAI_MODELS` name instead of the highest version. |
 | `SHINRAI_MODEL_CACHE` | `/models` | Where hf:// bundles are installed. |
 | `SHINRAI_PRECISION` | `fp32` | `fp32` \| `q8` \| `int4` — picks `quant/model-*.onnx`. |
 | `SHINRAI_ONNX_FILE` | – | Explicit bundle-relative graph path; overrides the precision file. |
@@ -121,7 +124,7 @@ Everything is an env var:
 | `SHINRAI_HOST` / `SHINRAI_PORT` | `0.0.0.0` / `8080` | Bind address. |
 | `SHINRAI_SELF_TEST` | `warn` | `off` \| `warn` \| `strict` — golden self-test at startup and first activation; verdict on `/healthz`. |
 | `SHINRAI_RELEASE_CHANNEL` | `public` | Echoed in `/api/analyze` and `/metrics` responses. |
-| `SHINRAI_LAZY_MODELS` | – | Comma-separated retained model names to load on demand. The first/default model cannot be lazy. |
+| `SHINRAI_LAZY_MODELS` | – | Comma-separated retained model names to load on demand. The default model cannot be lazy. |
 | `SHINRAI_MODEL_IDLE_TTL_SECONDS` | `14400` | Unload an activated lazy model after this many idle seconds (four hours by default). |
 | `HF_TOKEN` / `HF_HUB_OFFLINE` | – | Private repos / air-gapped operation. |
 
