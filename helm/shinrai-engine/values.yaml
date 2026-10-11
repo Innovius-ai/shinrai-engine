@@ -23,7 +23,8 @@ gpu:
 
 model:
   # Comma-separated name=source list; source is hf://org/repo[@rev] or an
-  # absolute path inside the pod. First entry is the default model.
+  # absolute path inside the pod. The highest version is the default model
+  # (pin another one with env SHINRAI_DEFAULT_MODEL).
   sources: "v1.1=hf://innovius/shinrai-pii-pathfinder-m-v1.1"
   # fp32 | q8 | int4 — anything but fp32 prints the precision warning into
   # the release NOTES and the service reports it on /healthz. fp32 is the

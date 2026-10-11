@@ -16,6 +16,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Self-hostable HTTP inference service for the ShinrAI PII models.",
     )
     parser.add_argument("--models", help='overrides SHINRAI_MODELS ("name=source,...")')
+    parser.add_argument(
+        "--default-model", help="overrides SHINRAI_DEFAULT_MODEL (default: the highest version)"
+    )
     parser.add_argument("--precision", help="overrides SHINRAI_PRECISION (fp32|q8|int4)")
     parser.add_argument("--host", help="overrides SHINRAI_HOST")
     parser.add_argument("--port", type=int, help="overrides SHINRAI_PORT")
@@ -26,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for flag, env_name in (
         (args.models, "SHINRAI_MODELS"),
+        (args.default_model, "SHINRAI_DEFAULT_MODEL"),
         (args.precision, "SHINRAI_PRECISION"),
         (args.host, "SHINRAI_HOST"),
         (args.port, "SHINRAI_PORT"),

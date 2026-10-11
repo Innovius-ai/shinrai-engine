@@ -9,6 +9,7 @@ box AND safe to state loudly (see the AUTH DISABLED banner in app.py).
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,9 +27,21 @@ class ConfigError(ValueError):
     """A setting is malformed; the message says which and how to fix it."""
 
 
+def version_key(name: str) -> tuple[int, ...]:
+    """'v1.10' -> (1, 10); names without digits sort lowest."""
+    digits = re.findall(r"\d+", name)
+    return tuple(int(d) for d in digits) if digits else (-1,)
+
+
+def newest_model(names: list[str]) -> str:
+    """The highest version among `names` (ties keep the earlier entry)."""
+    return max(names, key=version_key)
+
+
 def parse_model_specs(raw: str) -> list[tuple[str, str]]:
     """"name=source[,name=source...]"; source is a directory path or
-    hf://org/repo[@revision]. First entry is the default model."""
+    hf://org/repo[@revision]. The highest version is the default model
+    unless SHINRAI_DEFAULT_MODEL names one."""
     specs: list[tuple[str, str]] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
@@ -68,10 +81,11 @@ class Settings:
     release_channel: str = "public"
     lazy_models: frozenset[str] = frozenset()
     model_idle_ttl_seconds: int = 14_400
+    pinned_default: str | None = None
 
     @property
     def default_model(self) -> str:
-        return self.models[0][0]
+        return self.pinned_default or newest_model([name for name, _ in self.models])
 
     def onnx_relpath(self) -> str:
         """The bundle-relative path of the graph to load."""
@@ -168,8 +182,15 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             f"SHINRAI_LAZY_MODELS names are not present in SHINRAI_MODELS: "
             f"{sorted(unknown_lazy)}"
         )
-    if models[0][0] in lazy_models:
-        raise ConfigError("the default (first) SHINRAI_MODELS entry cannot be lazy")
+    pinned_default = env.get("SHINRAI_DEFAULT_MODEL", "").strip() or None
+    if pinned_default is not None and pinned_default not in model_names:
+        raise ConfigError(
+            f"SHINRAI_DEFAULT_MODEL={pinned_default!r} is not in SHINRAI_MODELS: "
+            f"{sorted(model_names)}"
+        )
+    default_model = pinned_default or newest_model([name for name, _ in models])
+    if default_model in lazy_models:
+        raise ConfigError(f"the default model {default_model!r} cannot be lazy")
 
     return Settings(
         models=models,
@@ -191,4 +212,5 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         model_idle_ttl_seconds=_int(
             env, "SHINRAI_MODEL_IDLE_TTL_SECONDS", 14_400, minimum=1
         ),
+        pinned_default=pinned_default,
     )
