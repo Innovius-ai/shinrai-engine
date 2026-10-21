@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shinrai-engine"
-version = "0.1.5"
+version = "0.1.6"
 description = "Self-hostable HTTP inference service for the ShinrAI PII detection models (ONNX, CPU/GPU)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,9 @@ dependencies = [
     "numpy==2.5.1",
     "transformers==4.57.6",
     "huggingface_hub>=0.34",
+    # CA bundle of the Hub downloads (httpx/requests): 2026.10.19 removes the
+    # emSign roots with compromised intermediates (GHSA-6q48-6c7w-9gw2).
+    "certifi>=2026.10.19",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "pydantic>=2.5",

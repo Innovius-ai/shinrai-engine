@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.6 — 2026-10-21
+
+- `certifi>=2026.10.19`: the CA bundle of the model downloads from Hugging Face
+  no longer trusts the emSign roots with compromised intermediate keys
+  (GHSA-6q48-6c7w-9gw2). An image built before 2026-10-20 kept the older
+  bundle.
+- Both images pin their base by digest: CPU `python:3.12.15-slim-trixie`
+  (2026-10-21), GPU `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04` (built
+  2024-12-03). Both run `apt-get upgrade`, so the Debian and Ubuntu security
+  updates published after the base was built apply at build time. The CUDA
+  packages of the GPU base are apt-held and do not change.
+- transformers stays 4.57.6. Its open advisories need model loading,
+  `save_pretrained` or custom generation code; the engine uses only the fast
+  tokenizer of a local bundle. The tokenizer output of 5.20.2 is byte-identical
+  for the published bundles; a switch is a later release.
+
 ## 0.1.5 — 2026-10-11
 
 - The default model is the highest version in `SHINRAI_MODELS` (`v1.10` >

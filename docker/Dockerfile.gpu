@@ -14,11 +14,16 @@
 # kernels for their quantized ops and mostly run on CPU regardless of the
 # provider. GPU serving is effectively fp32-only.
 
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+# The base image is pinned by its index digest (built 2024-12-03). apt-get
+# upgrade applies the Ubuntu security updates published since; the CUDA,
+# cuDNN, cuBLAS and NCCL packages of the image are apt-held, so the CUDA
+# stack stays as NVIDIA built it.
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
 
 ARG ORT_GPU_VERSION=1.26.*
 
 RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 srv
